@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "@opencode-ai/plugin@latest"
+  ],
+  "mcp": {
+    "web-reader": {
+      "type": "local",
+      "command": ["node", "./mcp-servers/web-reader.js"],
+      "enabled": true
+    },
+    "context-compressor": {
+      "type": "local",
+      "command": ["node", "./mcp-servers/context-compressor.js"],
+      "enabled": true
+    }
+  },
+  "settings": {
+    "silent_protocol": true,
+    "no_one_off_work": true,
+    "plan_validate_execute": true,
+    "closing_block_required": true,
+    "advocacy_mode": true
+  }
+}

@@ -1,0 +1,12 @@
+name: 🦉 OWL-AGENT Protocol Check
+on:
+  pull_request:
+    branches: [main, develop]
+jobs:
+  protocol-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          chmod +x .github/scripts/ci-check.sh
+          .github/scripts/ci-check.sh

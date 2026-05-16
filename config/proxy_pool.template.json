@@ -1,0 +1,39 @@
+{
+  "tier_1_managed_free": {
+    "providers": [
+      {
+        "name": "webshare",
+        "url": "https://www.webshare.io/",
+        "proxies": [
+          {"url": "http://YOUR_WEBSHARE_PROXY:80", "type": "datacenter", "protocols": ["HTTP", "SOCKS5"]}
+        ],
+        "bandwidth_limit": "1GB/month",
+        "ips": 10
+      },
+      {
+        "name": "oxylabs",
+        "url": "https://oxylabs.io/",
+        "proxies": [
+          {"url": "http://YOUR_OXYLABS_PROXY:7777", "type": "datacenter", "protocols": ["HTTP", "HTTPS", "SOCKS5"]}
+        ],
+        "bandwidth_limit": "5GB/month",
+        "ips": 5
+      }
+    ]
+  },
+  "fallback": {
+    "enabled": true,
+    "public_lists": [
+      "https://proxyscrape.com/free-proxy-list",
+      "https://iproyal.com/free-proxy-list"
+    ],
+    "warning": "Public lists have high failure rates and may be honey pots. Use only as last resort."
+  },
+  "settings": {
+    "health_check_interval": 300,
+    "ban_duration": 300,
+    "max_retries": 3,
+    "backoff_base": 1.5,
+    "rotate_on_error_only": true
+  }
+}
