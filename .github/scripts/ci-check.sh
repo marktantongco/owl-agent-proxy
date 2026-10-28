@@ -10,10 +10,15 @@ log_err()  { echo "[FAIL] $1"; ERRORS=$((ERRORS + 1)); }
 log_ok()   { echo "[PASS] $1"; }
 log_warn() { echo "[WARN] $1"; WARNINGS=$((WARNINGS + 1)); }
 
+# Local installs and build output are not part of the change under review.
+GREP_EXCLUDES=(--exclude-dir=.git --exclude-dir=venv --exclude-dir=.venv
+               --exclude-dir=node_modules --exclude-dir=__pycache__
+               --exclude-dir=dist --exclude-dir=build)
+
 check_protocol_escalation() {
     echo "CHECK 1: Protocol Escalation Justification"
     local files
-    files=$(grep -rn 'protocol\s*=\s*["'"'"']\(ja3\|browser\|http/2\|websocket\)["'"'"']' --include="*.py" --include="*.js" --include="*.ts" . 2>/dev/null || true)
+    files=$(grep -rn "${GREP_EXCLUDES[@]}" 'protocol\s*=\s*["'"'"']\(ja3\|browser\|http/2\|websocket\)["'"'"']' --include="*.py" --include="*.js" --include="*.ts" . 2>/dev/null || true)
 
     if [ -z "$files" ]; then
         log_ok "No protocol escalation found"
@@ -47,7 +52,7 @@ check_protocol_escalation() {
 check_proxy_credentials() {
     echo "CHECK 2: Proxy Credential Security"
     local hardcoded
-    hardcoded=$(grep -rnE '://[^:]+:[^@]+@' --include="*.py" --include="*.js" --include="*.ts" --include="*.json" . 2>/dev/null | grep -v "proxy_pool.json" | grep -v "test_" || true)
+    hardcoded=$(grep -rnE "${GREP_EXCLUDES[@]}" '://[^:]+:[^@]+@' --include="*.py" --include="*.js" --include="*.ts" --include="*.json" . 2>/dev/null | grep -v "proxy_pool.json" | grep -v "test_" || true)
 
     if [ -z "$hardcoded" ]; then
         log_ok "No hardcoded proxy credentials"

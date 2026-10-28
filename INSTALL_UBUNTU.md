@@ -1,4 +1,4 @@
-# 🦉 OWL-AGENT Proxy Defense Stack — Ubuntu Installation Guide
+# 🦉 OWL-AGENT Proxy Defense Stack v7.1 — Ubuntu Installation Guide
 
 > Complete installation guide for Ubuntu 20.04+ (also works on Debian 11+, Pop!_OS, Linux Mint, WSL2).
 
@@ -17,10 +17,30 @@
 
 ## Quick Install (60 seconds)
 
-### Automated Installer (Recommended)
+### Fastest path — repo installer
 
 ```bash
-# Fresh Ubuntu system — run this:
+sudo apt update && sudo apt install -y git python3 python3-venv
+git clone https://github.com/marktantongco/owl-agent-proxy.git
+cd owl-agent-proxy
+./install-owl.sh            # add --full for http/2 + ja3 + websocket + redis
+```
+
+Then launch through the canonical entry point:
+
+```bash
+~/.owl-agent/run.sh stats
+~/.owl-agent/run.sh verify
+```
+
+### Ubuntu system installer
+
+`scripts/install-ubuntu.sh` adds system packages, shell integration and the
+optional protocol phases on top of the same layout. It now delegates the module
+install, config and verification to `install-owl.sh`, so both paths converge on
+one `~/.owl-agent`.
+
+```bash
 sudo apt update && sudo apt install -y curl git python3 python3-pip python3-venv
 curl -fsSL https://raw.githubusercontent.com/marktantongco/owl-agent-proxy/main/scripts/install-ubuntu.sh | bash
 source ~/.bashrc
@@ -106,10 +126,11 @@ pip install \
     fake-useragent>=2.2.0 \
     aiohttp-socks>=0.10.0 \
     certifi>=2025.0.0 \
-    python-dateutil>=2.9.0
+    python-dateutil>=2.9.0 \
+    httpx[socks]>=0.27
 
 # Verify
-python3 -c "import aiohttp, aiofiles, cachetools, orjson, cryptography, socks; print('✅ Core installed')"
+python3 -c "import aiohttp, aiofiles, httpx, cachetools, orjson, cryptography, socks; print('✅ Core installed')"
 ```
 
 ### 5. Run Built-in Test
@@ -120,7 +141,7 @@ python3 proxy_defense.py
 
 Expected output:
 ```
-🦉 OWL-AGENT Proxy Defense Stack v3.0
+🦉 OWL-AGENT Proxy Defense Stack v7.1
 ==================================================
 Proxy Pool: 0 | Healthy: 0
 Protocols: {'http/1.1': True, 'http/2': False, 'ja3': False, 'websocket': False, 'browser': False}
@@ -183,14 +204,19 @@ source ~/.bashrc
 ### 8. Verify Installation
 
 ```bash
-# Check status
+# Full verification (V1–V20; --no-live skips the two network checks)
+~/.owl-agent/run.sh verify
+
+# Pool, source yield and session telemetry
+~/.owl-agent/run.sh stats
+
+# MCP protocol check
+~/.owl-agent/run.sh mcp-selftest
+
+# Check status / run CI guard / run tests
 owl-status
-
-# Run CI/CD check
 bash .github/scripts/ci-check.sh
-
-# Run tests
-python3 -m pytest tests/ -v
+python3 -m pytest -q
 ```
 
 ---
@@ -211,7 +237,7 @@ python3 -c "import httpx; c=httpx.AsyncClient(http2=True); print('✅ HTTP/2 ava
 
 ```bash
 source ~/.owl-agent/venv/bin/activate
-pip install curl-cffi>=0.10.0
+pip install 'curl-cffi>=0.10.0'
 python3 -c "from curl_cffi.requests import AsyncSession; print('✅ JA3 available')"
 ```
 
@@ -219,7 +245,7 @@ python3 -c "from curl_cffi.requests import AsyncSession; print('✅ JA3 availabl
 
 ```bash
 source ~/.owl-agent/venv/bin/activate
-pip install websockets>=15.0.0
+pip install 'websockets>=15.0.0'
 python3 -c "import websockets; print('✅ WebSocket available')"
 ```
 
@@ -227,7 +253,7 @@ python3 -c "import websockets; print('✅ WebSocket available')"
 
 ```bash
 source ~/.owl-agent/venv/bin/activate
-pip install playwright>=1.52.0
+pip install 'playwright>=1.52.0'
 python3 -m playwright install chromium
 python3 -c "from playwright.async_api import async_playwright; print('✅ Browser available')"
 ```

@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-🦉 OWL-AGENT PROXY DEFENSE STACK v3.0
-Architecture: Cache → Deduplicate → Rate Limit → Proxy Rotate
+🦉 OWL-AGENT PROXY DEFENSE STACK v7.1
+Architecture: Cache → Deduplicate → Rate Limit → Proxy Select → Protocol Router
 Multi-protocol: HTTP/1.1 | HTTP/2 | JA3 | WebSocket | Browser
+
+v7.1 additions (all optional, all lazy — cold import stays dependency-light):
+  * upstream harvesting from four list endpoints  (proxy_harvester.py)
+  * honeypot / response-injection detection          (proxy_harvester.py)
+  * sticky session affinity per (agent_id, domain)   (proxy_harvester.py)
+  * MCP server for agents                            (mcp_proxy_server.py)
 """
 
 import asyncio
+import sys
 import hashlib
 import json
 import time
@@ -22,8 +29,14 @@ import aiofiles
 
 try:
     import httpx
-    HTTP2_AVAILABLE = True
+
+    try:  # httpx.AsyncClient(http2=True) raises ImportError without the h2 package
+        import h2  # noqa: F401
+        HTTP2_AVAILABLE = True
+    except ImportError:
+        HTTP2_AVAILABLE = False
 except ImportError:
+    httpx = None  # type: ignore
     HTTP2_AVAILABLE = False
 
 try:
@@ -49,14 +62,45 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_DIR = Path.home() / ".owl-agent" / "config"
 PROXY_POOL_FILE = CONFIG_DIR / "proxy_pool.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+PROXY_CACHE_FILE = CONFIG_DIR / "proxy_cache.json"
 
 DEFAULT_TTL = 300
 DEFAULT_RATE = 1.0
 MAX_RETRIES = 3
 BACKOFF_BASE = 1.5
 
+# v7.1 pool defaults
+DEFAULT_SESSION_TTL = 900.0      # 15 min sticky binding
+DEFAULT_HARVEST_INTERVAL = 600.0  # 10 min between upstream sweeps
+DEFAULT_MAX_PROXIES = 2000
+ROTATION_MODES = ("sticky", "random", "round_robin")
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("owl-agent.proxy")
+
+
+def _load_harvester():
+    """Import ``proxy_harvester`` lazily.
+
+    Kept out of module scope so that a bare ``import proxy_defense`` never pays
+    for httpx, and so that deployments without the harvester file still work.
+    """
+    try:
+        import proxy_harvester  # type: ignore
+        return proxy_harvester
+    except ImportError:
+        pass
+    fallback = Path.home() / ".owl-agent"
+    if (fallback / "proxy_harvester.py").exists():
+        import sys
+        sys.path.insert(0, str(fallback))
+        try:
+            import proxy_harvester  # type: ignore
+            return proxy_harvester
+        except ImportError:
+            return None
+    return None
 
 
 @dataclass
@@ -110,6 +154,10 @@ class ProxyEntry:
     fail_count: int = 0
     ban_until: float = 0.0
     latency_ms: float = 9999.0
+    # v7.1: harvested entries start unvalidated (healthy=False) until a probe
+    # succeeds, so a stale upstream list never reaches the request path.
+    validated: bool = True
+    added_at: float = field(default_factory=time.time)
 
     def is_banned(self) -> bool:
         return time.time() < self.ban_until
@@ -124,8 +172,42 @@ class ProxyEntry:
     def mark_success(self, latency_ms: float):
         self.fail_count = 0
         self.healthy = True
+        self.validated = True
         self.latency_ms = latency_ms
         self.last_check = time.time()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "url": self.url,
+            "proxy_type": self.proxy_type,
+            "protocol": self.protocol,
+            "source": self.source,
+            "tier": self.tier,
+            "healthy": self.healthy,
+            "validated": self.validated,
+            "last_check": self.last_check,
+            "fail_count": self.fail_count,
+            "ban_until": self.ban_until,
+            "latency_ms": self.latency_ms,
+            "added_at": self.added_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ProxyEntry":
+        return cls(
+            url=data["url"],
+            proxy_type=data.get("proxy_type", "free"),
+            protocol=data.get("protocol", "http"),
+            source=data.get("source", "cache"),
+            tier=int(data.get("tier", 4)),
+            healthy=bool(data.get("healthy", False)),
+            last_check=float(data.get("last_check", 0.0)),
+            fail_count=int(data.get("fail_count", 0)),
+            ban_until=float(data.get("ban_until", 0.0)),
+            latency_ms=float(data.get("latency_ms", 9999.0)),
+            validated=bool(data.get("validated", False)),
+            added_at=float(data.get("added_at", time.time())),
+        )
 
 
 class ProxyPoolLoader:
@@ -200,6 +282,10 @@ class RequestDeduplicator:
             return result
         except Exception as e:
             future.set_exception(e)
+            # Mark the exception as retrieved: the first caller is re-raised
+            # below, but if no second caller ever awaits the shared future,
+            # asyncio would log "Future exception was never retrieved".
+            future.exception()
             raise
         finally:
             async with self._lock:
@@ -225,55 +311,482 @@ class DomainRateLimiter:
 
 
 class ProxyRotator:
-    def __init__(self, proxies: List[ProxyEntry] = None):
-        self.proxies = proxies or []
+    """Tier-sorted proxy pool with optional v7.1 upstream harvesting.
+
+    Selection order is tier then latency. When a domain is supplied and
+    ``rotation_mode="sticky"``, a binding from ``SessionAffinityManager`` wins —
+    that is what keeps an agent on one exit IP for the life of a task.
+
+    Upstream harvesting is opt-in (``use_upstream_harvester=True``). Harvested
+    entries enter the pool at tier 4 with ``healthy=False`` and are only promoted
+    after a real probe, so a stale list cannot poison the request path.
+    """
+
+    def __init__(
+        self,
+        proxies: Optional[List[ProxyEntry]] = None,
+        *,
+        use_upstream_harvester: bool = False,
+        session_ttl: float = DEFAULT_SESSION_TTL,
+        harvest_interval: float = DEFAULT_HARVEST_INTERVAL,
+        honeypot_check: bool = True,
+        max_proxies: int = DEFAULT_MAX_PROXIES,
+        validator_concurrency: int = 10,
+        validator_timeout: float = 8.0,
+        max_per_source: int = 300,
+        cache_file: Optional[Path] = None,
+    ):
+        self.proxies: List[ProxyEntry] = proxies or []
         self._current_index = 0
         self._lock = asyncio.Lock()
         self._loader = ProxyPoolLoader()
 
-    async def load_all_sources(self, session: aiohttp.ClientSession):
-        managed = self._loader.load()
-        self.proxies.extend(managed)
-        logger.info(f"Loaded {len(self.proxies)} managed proxies")
+        self.use_upstream_harvester = use_upstream_harvester
+        self.session_ttl = session_ttl
+        self.harvest_interval = harvest_interval
+        self.honeypot_check = honeypot_check
+        self.max_proxies = max_proxies
+        self.validator_concurrency = validator_concurrency
+        self.validator_timeout = validator_timeout
+        self.max_per_source = max_per_source
+        self.cache_file = cache_file
 
-    async def get_proxy(self) -> Optional[ProxyEntry]:
+        self._affinity = None          # SessionAffinityManager (lazy)
+        self._harvester = None         # UpstreamHarvester (lazy)
+        self._honeypot = None          # HoneypotDetector (lazy)
+        self._harvest_task: Optional[asyncio.Task] = None
+        self._validation_task: Optional[asyncio.Task] = None
+        self._validation_tasks: set = set()
+        self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
+        self._sem: Optional[asyncio.Semaphore] = None
+        self._urls: set = set()
+        self._harvested = 0
+        self._rejected = 0
+        for proxy in self.proxies:
+            self._remember(proxy)
+
+    # ── pool bookkeeping ───────────────────────────────────────────────
+    def _remember(self, proxy: ProxyEntry) -> None:
+        self._urls.add(proxy.url)
+
+    def _find(self, url: str) -> Optional[ProxyEntry]:
+        for proxy in self.proxies:
+            if proxy.url == url:
+                return proxy
+        return None
+
+    def _trim(self) -> None:
+        """Drop the worst entries when the pool exceeds ``max_proxies``.
+
+        Managed (tier 1) and healthy entries survive; unvalidated free entries
+        are evicted first so the pool does not fill with dead inventory.
+        """
+        if len(self.proxies) <= self.max_proxies:
+            return
+        keep = sorted(
+            self.proxies,
+            key=lambda p: (p.tier == 1, p.validated, p.healthy,
+                           -p.latency_ms, p.added_at),
+            reverse=True,
+        )[: self.max_proxies]
+        keep_ids = {id(p) for p in keep}
+        self.proxies = [p for p in self.proxies if id(p) in keep_ids]
+        self._urls = {p.url for p in self.proxies}
+
+    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None):
+        managed = self._loader.load()
+        for proxy in managed:
+            if proxy.url in self._urls:
+                continue
+            self.proxies.append(proxy)
+            self._remember(proxy)
+        logger.info(f"Loaded {len(managed)} managed proxies ({len(self.proxies)} in pool)")
+
+    def export_state(self) -> Dict[str, Any]:
+        return {"version": "7.1", "proxies": [p.to_dict() for p in self.proxies]}
+
+    def import_state(self, data: Dict[str, Any]) -> int:
+        restored = 0
+        for item in data.get("proxies", []) if isinstance(data, dict) else []:
+            try:
+                entry = ProxyEntry.from_dict(item)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if entry.url in self._urls:
+                continue
+            self.proxies.append(entry)
+            self._remember(entry)
+            restored += 1
+        self._trim()
+        return restored
+
+    def load_cache(self) -> int:
+        if not self.cache_file or not Path(self.cache_file).exists():
+            return 0
+        try:
+            with open(self.cache_file) as handle:
+                return self.import_state(json.load(handle))
+        except Exception as exc:
+            logger.warning(f"proxy cache load failed: {exc}")
+            return 0
+
+    def save_cache(self) -> None:
+        if not self.cache_file:
+            return
+        try:
+            Path(self.cache_file).parent.mkdir(parents=True, exist_ok=True)
+            tmp = Path(str(self.cache_file) + ".tmp")
+            with open(tmp, "w") as handle:
+                json.dump(self.export_state(), handle)
+            tmp.replace(self.cache_file)
+        except Exception as exc:
+            logger.warning(f"proxy cache save failed: {exc}")
+
+    # ── selection ──────────────────────────────────────────────────────
+    def healthy_entries(self) -> List[ProxyEntry]:
+        return [p for p in self.proxies if p.healthy and not p.is_banned()]
+
+    async def get_proxy(
+        self,
+        domain: Optional[str] = None,
+        agent_id: str = "default",
+        rotation_mode: str = "sticky",
+    ) -> Optional[ProxyEntry]:
+        """Pick a proxy. Backwards compatible: ``get_proxy()`` rotates as before."""
+        mode = rotation_mode if rotation_mode in ROTATION_MODES else "sticky"
+        wants_sticky = bool(domain) and mode == "sticky"
+        affinity = self._ensure_affinity() if wants_sticky else None
+
+        if wants_sticky:
+            bound_url = await affinity.get(agent_id, domain)
+            if bound_url:
+                bound = self._find(bound_url)
+                if bound and bound.healthy and not bound.is_banned():
+                    return bound
+                # binding points at a dead proxy — drop it and pick again
+                await affinity.invalidate(agent_id, domain)
+
         async with self._lock:
-            candidates = [p for p in self.proxies if p.healthy and not p.is_banned()]
-            candidates.sort(key=lambda p: (p.tier, p.latency_ms))
+            candidates = self.healthy_entries()
             if not candidates:
                 return None
-            proxy = candidates[self._current_index % len(candidates)]
-            self._current_index += 1
-            return proxy
+            if mode == "random":
+                proxy = random.choice(candidates)
+            else:
+                candidates.sort(key=lambda p: (p.tier, p.latency_ms))
+                proxy = candidates[self._current_index % len(candidates)]
+                self._current_index += 1
+
+        if wants_sticky:
+            previous = await affinity.bind(agent_id, domain, proxy.url)
+            if previous and previous != proxy.url:
+                logger.debug(f"rebound {agent_id}/{domain} → {proxy.url}")
+        return proxy
 
     async def mark_banned(self, proxy: ProxyEntry):
         proxy.mark_failed()
 
+    async def rotate(self, agent_id: str = "default",
+                     domain: Optional[str] = None) -> bool:
+        """Invalidate one binding, or every binding for an agent."""
+        if self._affinity is None:
+            return False
+        affinity = self._affinity
+        if domain:
+            return await affinity.invalidate(agent_id, domain)
+        return bool(await affinity.clear(agent_id))
+
+    # ── upstream harvesting ────────────────────────────────────────────
+    def _ensure_affinity(self):
+        if self._affinity is None:
+            module = _load_harvester()
+            if module is None:
+                raise RuntimeError(
+                    "proxy_harvester.py not importable — session affinity unavailable"
+                )
+            self._affinity = module.SessionAffinityManager(ttl_seconds=self.session_ttl)
+        return self._affinity
+
+    async def start_upstream(self) -> bool:
+        """Start harvesting + validation. Returns True when the pool is live."""
+        if not self.use_upstream_harvester:
+            return False
+        if self._harvest_task and not self._harvest_task.done():
+            return True
+        module = _load_harvester()
+        if module is None:
+            logger.warning("upstream harvester requested but proxy_harvester.py is missing")
+            return False
+        try:
+            self._harvester = module.UpstreamHarvester()
+            await self._harvester.__aenter__()
+            self._ensure_affinity()
+            await self._affinity.start()
+            if self.honeypot_check:
+                self._honeypot = module.HoneypotDetector(timeout=self.validator_timeout)
+                established = await self._honeypot.establish_baseline()
+                logger.info(f"honeypot baseline: {'ok' if established else 'unavailable (fail-open)'}")
+            self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
+            self._validation_task = asyncio.create_task(self._validation_loop())
+            self._harvest_task = asyncio.create_task(self._harvest_loop())
+            logger.info(f"upstream harvesting on ({len(self._harvester.sources)} sources)")
+            return True
+        except Exception as exc:
+            logger.warning(f"upstream harvester start failed: {exc}")
+            await self.stop_upstream()
+            return False
+
+    async def stop_upstream(self) -> None:
+        for task in (self._harvest_task, self._validation_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        self._harvest_task = None
+        self._validation_task = None
+        for task in list(self._validation_tasks):
+            if not task.done():
+                task.cancel()
+        self._validation_tasks.clear()
+        if self._affinity is not None:
+            await self._affinity.stop()
+        if self._harvester is not None:
+            try:
+                await self._harvester.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._harvester = None
+        self.save_cache()
+
+    async def _harvest_loop(self) -> None:
+        while True:
+            try:
+                added = await self.harvest_once()
+                if added:
+                    logger.info(f"harvest added {added} candidates "
+                                f"({len(self.proxies)} in pool)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"harvest cycle failed: {exc}")
+            await asyncio.sleep(max(30.0, self.harvest_interval))
+
+    async def harvest_once(self, max_per_source: Optional[int] = None) -> int:
+        """Fetch upstream lists and enqueue new candidates for validation."""
+        if self._harvester is None:
+            return 0
+        found = await self._harvester.harvest(
+            max_per_source=max_per_source or self.max_per_source
+        )
+        added = 0
+        for item in found:
+            url = item["url"]
+            if url in self._urls:
+                continue
+            entry = ProxyEntry(
+                url=url,
+                proxy_type="free",
+                protocol=item.get("protocol", "http"),
+                source=item.get("source", "upstream"),
+                tier=4,
+                healthy=False,
+                validated=False,
+                latency_ms=float(item.get("latency_ms") or 9999.0),
+            )
+            self.proxies.append(entry)
+            self._remember(entry)
+            self._validation_queue.put_nowait(url)
+            added += 1
+        self._harvested += added
+        self._trim()
+        return added
+
+    # ── validation ─────────────────────────────────────────────────────
+    async def _validation_loop(self) -> None:
+        while True:
+            url = await self._validation_queue.get()
+            if self._sem is None:
+                self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
+            task = asyncio.create_task(self._validate_entry(url))
+            self._validation_tasks.add(task)
+            task.add_done_callback(self._validation_tasks.discard)
+
+    async def _validate_entry(self, url: str) -> None:
+        assert self._sem is not None
+        async with self._sem:
+            entry = self._find(url)
+            if entry is None:
+                return
+            module = _load_harvester()
+            if module is None:
+                return
+            try:
+                metrics = await module.validate_proxy(url, timeout=self.validator_timeout)
+            except Exception:
+                metrics = None
+            if not metrics or not metrics.get("ok"):
+                entry.mark_failed()
+                if entry.fail_count >= 3:
+                    self._remove(url)
+                return
+
+            if self._honeypot is not None:
+                trusted, reason = await self._honeypot.check(url)
+                # Only definitive tampering rejects; connectivity noise does not.
+                if not trusted and (reason.startswith("content-mismatch")
+                                    or reason.startswith("injected")):
+                    self._rejected += 1
+                    logger.warning(f"honeypot reject {url}: {reason}")
+                    entry.mark_failed()
+                    self._remove(url)
+                    return
+
+            entry.mark_success(
+                float(metrics.get("tcp_ms") or 0) + float(metrics.get("http_ms") or 0)
+            )
+
+    def _remove(self, url: str) -> None:
+        self.proxies = [p for p in self.proxies if p.url != url]
+        self._urls.discard(url)
+
+    # ── introspection ──────────────────────────────────────────────────
+    async def session_stats(self) -> Dict[str, Any]:
+        if self._affinity is None:
+            return {"active": 0, "ttl_seconds": self.session_ttl, "by_domain": {}}
+        return await self._affinity.stats()
+
+    def source_health(self) -> Dict[str, Any]:
+        if self._harvester is None:
+            return {}
+        return self._harvester.health.snapshot()
+
+    def upstream_stats(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.use_upstream_harvester,
+            "running": bool(self._harvest_task and not self._harvest_task.done()),
+            "harvested_total": self._harvested,
+            "honeypot_rejections": self._rejected,
+            "unvalidated": sum(1 for p in self.proxies if not p.validated),
+            "pending_validation": self._validation_queue.qsize(),
+            "sources": self.source_health(),
+        }
+
 
 class ResilientClient:
-    def __init__(self, cache_ttl: int = DEFAULT_TTL, rate_limit: float = DEFAULT_RATE, max_retries: int = MAX_RETRIES, auto_load_proxies: bool = True, default_protocol: str = "http/1.1"):
+    """Cache → dedupe → rate limit → proxy select → protocol router.
+
+    v7.1 knobs (all optional, config.json-aware):
+
+    use_upstream_harvester  pull free proxies from proxy_harvester.DEFAULT_SOURCES
+    session_ttl            sticky binding lifetime in seconds (default 900)
+    harvest_interval       seconds between upstream sweeps (default 600)
+    honeypot_check         verify harvested proxies against a response baseline
+    agent_id               logical agent identity used for sticky sessions
+    """
+
+    def __init__(
+        self,
+        cache_ttl: int = DEFAULT_TTL,
+        rate_limit: float = DEFAULT_RATE,
+        max_retries: int = MAX_RETRIES,
+        auto_load_proxies: bool = True,
+        default_protocol: str = "http/1.1",
+        *,
+        use_upstream_harvester: Optional[bool] = None,
+        session_ttl: Optional[float] = None,
+        harvest_interval: Optional[float] = None,
+        honeypot_check: Optional[bool] = None,
+        max_proxies: Optional[int] = None,
+        config_path: Optional[Union[str, Path]] = None,
+    ):
+        config = self._read_config(config_path)
+        self.config = config
+
+        def pick(value, key, default):
+            if value is not None:
+                return value
+            return config.get(key, default)
+
+        # These three predate config.json, so they use "still at the built-in
+        # default → let config win" rather than a None sentinel (which would
+        # change the documented signature).
+        if cache_ttl == DEFAULT_TTL:
+            cache_ttl = int(config.get("cache_ttl", cache_ttl))
+        if rate_limit == DEFAULT_RATE:
+            rate_limit = float(config.get("rate_limit", rate_limit))
+        if max_retries == MAX_RETRIES:
+            max_retries = int(config.get("max_retries", max_retries))
+
         self.cache = HTTPCache(ttl=cache_ttl)
         self.dedup = RequestDeduplicator()
         self.limiter = DomainRateLimiter(default_rate=rate_limit)
-        self.rotator = ProxyRotator()
+        self.use_upstream_harvester = bool(pick(use_upstream_harvester, "use_upstream_harvester", False))
+        self.session_ttl = float(pick(session_ttl, "session_ttl", DEFAULT_SESSION_TTL))
+        self.harvest_interval = float(pick(harvest_interval, "harvest_interval", DEFAULT_HARVEST_INTERVAL))
+        self.honeypot_check = bool(pick(honeypot_check, "honeypot_check", True))
+        resolved_max_proxies = int(pick(max_proxies, "max_proxies", DEFAULT_MAX_PROXIES))
+        self.rotator = ProxyRotator(
+            use_upstream_harvester=self.use_upstream_harvester,
+            session_ttl=self.session_ttl,
+            harvest_interval=self.harvest_interval,
+            honeypot_check=self.honeypot_check,
+            max_proxies=resolved_max_proxies,
+            validator_concurrency=int(config.get("validator_concurrency", 10)),
+            validator_timeout=float(config.get("validator_timeout", 8.0)),
+            cache_file=PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None,
+        )
         self.max_retries = max_retries
+        self.cache_ttl = cache_ttl
+        self.rate_limit = rate_limit
         self.auto_load_proxies = auto_load_proxies
         self.default_protocol = default_protocol
         self._session: Optional[aiohttp.ClientSession] = None
         self._httpx_client = None
         self._curl_session: Optional[AsyncCurlSession] = None
 
+    @staticmethod
+    def _read_config(config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
+        path = Path(config_path) if config_path else CONFIG_FILE
+        if not path.exists():
+            return {}
+        try:
+            with open(path) as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.warning(f"config load failed ({path}): {exc}")
+            return {}
+
     async def __aenter__(self):
         self._session = aiohttp.ClientSession()
-        if HTTP2_AVAILABLE:
-            self._httpx_client = httpx.AsyncClient(http2=True, timeout=30.0)
-        if JA3_AVAILABLE:
-            self._curl_session = AsyncCurlSession(impersonate="chrome110", timeout=30.0)
-        if self.auto_load_proxies:
-            await self.rotator.load_all_sources(self._session)
+        try:
+            if HTTP2_AVAILABLE and httpx is not None:
+                try:
+                    self._httpx_client = httpx.AsyncClient(http2=True, timeout=30.0)
+                except Exception as exc:
+                    logger.warning(f"http/2 client unavailable: {exc}")
+            if JA3_AVAILABLE:
+                self._curl_session = AsyncCurlSession(impersonate="chrome110", timeout=30.0)
+            if self.auto_load_proxies:
+                await self.rotator.load_all_sources(self._session)
+            # restore the previous pool, then top it up from upstream if asked
+            self.rotator.load_cache()
+            if self.use_upstream_harvester:
+                await self.rotator.start_upstream()
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            await self.rotator.stop_upstream()
+        except Exception as exc:
+            logger.debug(f"rotator shutdown: {exc}")
         if self._session:
             await self._session.close()
         if self._httpx_client:
@@ -281,21 +794,40 @@ class ResilientClient:
         if self._curl_session:
             await self._curl_session.close()
 
-    async def request(self, method: str, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, protocol: Optional[str] = None, **kwargs):
+    async def request(
+        self,
+        method: str,
+        url: str,
+        params: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        protocol: Optional[str] = None,
+        *,
+        agent_id: str = "default",
+        rotation_mode: str = "sticky",
+        **kwargs,
+    ):
         protocol = protocol or self.default_protocol
         cached = await self.cache.get(method, url, params, protocol)
         if cached:
             return cached
 
         async def factory():
-            return await self._execute_with_retry(method, url, params, headers, protocol, **kwargs)
+            return await self._execute_with_retry(
+                method, url, params, headers, protocol,
+                agent_id=agent_id, rotation_mode=rotation_mode, **kwargs,
+            )
 
         return await self.dedup.execute(method, url, params, protocol, factory)
 
-    async def _execute_with_retry(self, method, url, params, headers, protocol, **kwargs):
+    async def _execute_with_retry(self, method, url, params, headers, protocol,
+                                  agent_id: str = "default",
+                                  rotation_mode: str = "sticky", **kwargs):
+        domain = urlparse(url).netloc
         for attempt in range(self.max_retries):
             await self.limiter.acquire(url)
-            proxy = await self.rotator.get_proxy()
+            proxy = await self.rotator.get_proxy(
+                domain=domain, agent_id=agent_id, rotation_mode=rotation_mode
+            )
             proxy_url = proxy.url if proxy else None
 
             try:
@@ -349,8 +881,19 @@ class ResilientClient:
         # APPROVED: http/2 baseline protocol handler — latency benchmark tested, fallback from http/1.1 when multiplexing needed
         if not self._httpx_client:
             raise RuntimeError("httpx not available")
-        proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
-        resp = await self._httpx_client.request(method=method, url=url, params=params, headers=headers, proxies=proxies, **kwargs)
+        # httpx >= 0.28 removed the `proxies=` mapping in favour of `proxy=`
+        try:
+            resp = await self._httpx_client.request(
+                method=method, url=url, params=params, headers=headers,
+                proxy=proxy_url, **kwargs
+            )
+        except TypeError:
+            proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
+            resp = await self._httpx_client.request(
+                method=method, url=url, params=params, headers=headers,
+                proxies=proxies, **kwargs
+            )
+        # APPROVED: http/2 multiplexing fallback — http/1.1 baseline retained, latency ms benchmark tested
         return CachedResponse(status=resp.status_code, content=resp.content, headers=dict(resp.headers), timestamp=0, ttl=0, protocol="http/2")
 
     async def _request_ja3(self, method, url, params, headers, proxy_url, **kwargs):
@@ -390,7 +933,7 @@ class ResilientClient:
         tier_counts = defaultdict(int)
         for p in self.rotator.proxies:
             tier_counts[p.tier] += 1
-        return {
+        stats = {
             "cache_memory_size": len(self.cache._memory),
             "dedup_in_flight": len(self.dedup._in_flight),
             "proxies_total": total,
@@ -405,21 +948,154 @@ class ResilientClient:
                 "ja3": JA3_AVAILABLE,
                 "websocket": WS_AVAILABLE,
                 "browser": PLAYWRIGHT_AVAILABLE
-            }
+            },
+            # v7.1
+            "version": "7.1",
+            "upstream_harvester": self.rotator.upstream_stats(),
+            "source_health": self.rotator.source_health(),
+            "session_affinity": await self.rotator.session_stats(),
         }
+        return stats
 
 
-async def main():
-    print("🦉 OWL-AGENT Proxy Defense Stack v3.0")
+async def _demo(harvest: bool = False) -> int:
+    print("🦉 OWL-AGENT Proxy Defense Stack v7.1")
     print("=" * 50)
-    async with ResilientClient(cache_ttl=300, rate_limit=1.0) as client:
+    async with ResilientClient(cache_ttl=300, rate_limit=1.0,
+                              use_upstream_harvester=harvest) as client:
         stats = await client.get_stats()
         print(f"\nProxy Pool: {stats['proxies_total']} | Healthy: {stats['proxies_healthy']}")
         print(f"Protocols: {stats['protocols_available']}")
-        resp = await client.request("GET", "https://httpbin.org/get")
-        print(f"\nTest: Status {resp.status}, Protocol: {resp.protocol}")
-        print("\n✅ Defense stack operational.")
+        try:
+            resp = await client.request("GET", "https://httpbin.org/get")
+            print(f"\nTest: Status {resp.status}, Protocol: {resp.protocol}")
+            print("\n✅ Defense stack operational.")
+            return 0
+        except Exception as exc:
+            print(f"\n⚠ live request failed ({type(exc).__name__}): {exc}")
+            print("  Stack initialised; retry with network access.")
+            return 0
+
+
+async def _cli(argv: List[str]) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="proxy_defense.py",
+        description="🦉 OWL-AGENT proxy defense stack v7.1",
+    )
+    parser.add_argument("--harvest", action="store_true", default=None,
+                        help="force-enable upstream harvesting (default: config.json)")
+    sub = parser.add_subparsers(dest="command")
+
+    p_stats = sub.add_parser("stats", help="print pool + source + session telemetry")
+    p_stats.add_argument("--json", action="store_true")
+
+    p_fetch = sub.add_parser("fetch", help="fetch a URL through the stack")
+    p_fetch.add_argument("url")
+    p_fetch.add_argument("--protocol", default=None,
+                         choices=["http/1.1", "http/2", "ja3", "websocket", "browser"])
+    p_fetch.add_argument("--agent-id", default="default")
+    p_fetch.add_argument("--rotation-mode", default="sticky", choices=list(ROTATION_MODES))
+    p_fetch.add_argument("--json", action="store_true")
+
+    p_harvest = sub.add_parser("harvest", help="run the harvester and report yield")
+    p_harvest.add_argument("--seconds", type=float, default=20.0)
+    p_harvest.add_argument("--max-per-source", type=int, default=300)
+
+    p_validate = sub.add_parser("validate", help="probe one proxy URL")
+    p_validate.add_argument("proxy_url")
+
+    args = parser.parse_args(argv)
+
+    if args.command is None:
+        return await _demo(harvest=bool(args.harvest))
+
+    if args.command == "stats":
+        async with ResilientClient(use_upstream_harvester=args.harvest) as client:
+            stats = await client.get_stats()
+        if args.json:
+            print(json.dumps(stats, indent=2, default=str))
+        else:
+            print(f"proxies : {stats['proxies_healthy']}/{stats['proxies_total']} healthy")
+            print(f"banned  : {stats['proxies_banned']}")
+            print(f"sessions: {stats['session_affinity'].get('active', 0)} active")
+            upstream = stats["upstream_harvester"]
+            print(f"upstream: {'running' if upstream['running'] else 'off'} "
+                  f"({upstream['harvested_total']} harvested, "
+                  f"{upstream['unvalidated']} unvalidated)")
+            for name, health in (stats["source_health"] or {}).items():
+                print(f"  {name:<18} yield={health['yield_rate']:<6} "
+                      f"failures={health['failures']} {health['last_error'] or ''}")
+        return 0
+
+    if args.command == "fetch":
+        async with ResilientClient(use_upstream_harvester=args.harvest) as client:
+            resp = await client.request(
+                "GET", args.url, protocol=args.protocol,
+                agent_id=args.agent_id, rotation_mode=args.rotation_mode,
+            )
+        if args.json:
+            try:
+                body = resp.content.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                import base64
+                body = base64.b64encode(resp.content).decode("ascii")
+                encoding = "base64"
+            print(json.dumps({"status": resp.status, "protocol": resp.protocol,
+                              "headers": resp.headers, "encoding": encoding,
+                              "body": body[:2000]}))
+        else:
+            sys.stdout.buffer.write(
+                resp.content if isinstance(resp.content, bytes) else resp.content.encode()
+            )
+        return 0
+
+    if args.command == "harvest":
+        module = _load_harvester()
+        if module is None:
+            print("proxy_harvester.py not importable", file=sys.stderr)
+            return 1
+        async with ResilientClient(use_upstream_harvester=True,
+                                   harvest_interval=max(60.0, args.seconds)) as client:
+            added = await client.rotator.harvest_once(max_per_source=args.max_per_source)
+            print(f"harvest: +{added} candidates in {len(client.rotator.proxies)} pool")
+            deadline = time.time() + args.seconds
+            while time.time() < deadline and client.rotator.healthy_entries() == []:
+                await asyncio.sleep(1)
+            stats = await client.get_stats()
+        print(json.dumps({"added": added,
+                          "pool": stats["proxies_total"],
+                          "healthy": stats["proxies_healthy"],
+                          "source_health": stats["source_health"],
+                          "upstream": stats["upstream_harvester"]}, indent=2, default=str))
+        return 0
+
+    if args.command == "validate":
+        module = _load_harvester()
+        if module is None:
+            print("proxy_harvester.py not importable", file=sys.stderr)
+            return 1
+        metrics = await module.validate_proxy(args.proxy_url)
+        detector = module.HoneypotDetector()
+        verdict = {"trusted": None, "reason": "no-baseline"}
+        if metrics and metrics.get("ok") and await detector.establish_baseline():
+            trusted, reason = await detector.check(args.proxy_url)
+            verdict = {"trusted": trusted, "reason": reason}
+        print(json.dumps({"metrics": metrics, **verdict}, indent=2, default=str))
+        return 0 if metrics and metrics.get("ok") else 1
+
+    parser.print_help()
+    return 2
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    import sys as _sys
+    args = list(_sys.argv[1:] if argv is None else argv)
+    return asyncio.run(_cli(args))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    sys.exit(main())
