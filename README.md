@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
-[![Tests](https://img.shields.io/badge/tests-148%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -100,7 +100,7 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 148 (harvester, MCP protocol, sticky sessions, cache, config) |
+| Tests | 9 | 150 (harvester, MCP protocol, sticky sessions, cache, config) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
 
 Deep dive: [docs/V7_UPSTREAM.md](docs/V7_UPSTREAM.md).
@@ -573,7 +573,7 @@ Run the same checks by hand:
 
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
-python -m pytest -q                                 # 148 tests
+python -m pytest -q                                 # 150 tests
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -590,7 +590,7 @@ python mcp_proxy_server.py --selftest               # MCP protocol
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                       # 148 tests, offline
+python -m pytest -q                       # 150 tests, offline + hermetic
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -603,11 +603,14 @@ bash .github/scripts/ci-check.sh          # escalation + credential guard
 |------|-------|--------|
 | `tests/test_proxy_defense.py` | 9 | TTL, token buckets, bans, cache, rotation |
 | `tests/test_proxy_harvester.py` | 62 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
-| `tests/test_v71_integration.py` | 38 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
+| `tests/test_v71_integration.py` | 40 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
 | `tests/test_mcp_server.py` | 39 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
 
-Everything above runs offline; live-egress behaviour is covered by the
-installer's V19/V20 checks, which SKIP without network.
+Everything above runs offline and hermetically: `tests/conftest.py` blocks
+outbound sockets (loopback excepted), so a test can never pass merely because
+the runner happened to have — or lack — connectivity. A test that needs the
+internet must opt in with `@pytest.mark.allow_network`. Live-egress behaviour is
+covered by the installer's V19/V20 checks, which SKIP without network.
 
 ---
 
