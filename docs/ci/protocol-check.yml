@@ -1,14 +1,12 @@
-# ⚠️ PENDING APPLY — this is a staged copy, not an active workflow.
+# ⚠️ PENDING APPLY — staged copy, not an active workflow. The lines above the
+# first blank line are this header, not YAML. Activate with:
 #
-# GitHub App tokens without the `Workflows: Read and write` permission cannot
-# create or update files under .github/workflows/. Activate this change with:
-#
-#     cp docs/ci/protocol-check.yml .github/workflows/protocol-check.yml
+#     sed '1,/^$/d' docs/ci/protocol-check.yml > .github/workflows/protocol-check.yml
 #     git add .github/workflows/protocol-check.yml
 #     git commit -m "ci: run pytest matrix and installer smoke test"
 #     git push
 #
-# Then delete this staged copy (and this header) in the same commit.
+# Then delete docs/ci/protocol-check.yml in the same commit.
 #
 name: 🦉 OWL-AGENT Checks
 
