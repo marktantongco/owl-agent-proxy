@@ -74,10 +74,19 @@ BACKOFF_BASE = 1.5
 DEFAULT_SESSION_TTL = 900.0      # 15 min sticky binding
 DEFAULT_HARVEST_INTERVAL = 600.0  # 10 min between upstream sweeps
 DEFAULT_MAX_PROXIES = 2000
+MAX_PROXIED_CLIENTS = 32
 ROTATION_MODES = ("sticky", "random", "round_robin")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("owl-agent.proxy")
+
+
+async def _close_quietly(client) -> None:
+    """Close a client without letting an error surface as an unhandled task."""
+    try:
+        await client.aclose()
+    except Exception:
+        pass
 
 
 def _load_harvester():
@@ -737,6 +746,7 @@ class ResilientClient:
             max_proxies=resolved_max_proxies,
             validator_concurrency=int(config.get("validator_concurrency", 10)),
             validator_timeout=float(config.get("validator_timeout", 8.0)),
+            max_per_source=int(config.get("max_per_source", 300)),
             cache_file=PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None,
         )
         self.max_retries = max_retries
@@ -746,6 +756,7 @@ class ResilientClient:
         self.default_protocol = default_protocol
         self._session: Optional[aiohttp.ClientSession] = None
         self._httpx_client = None
+        self._httpx_proxied: Dict[str, Any] = {}
         self._curl_session: Optional[AsyncCurlSession] = None
 
     @staticmethod
@@ -789,6 +800,9 @@ class ResilientClient:
             logger.debug(f"rotator shutdown: {exc}")
         if self._session:
             await self._session.close()
+        for client in list(getattr(self, "_httpx_proxied", {}).values()):
+            await _close_quietly(client)
+        self._httpx_proxied.clear()
         if self._httpx_client:
             await self._httpx_client.aclose()
         if self._curl_session:
@@ -881,18 +895,21 @@ class ResilientClient:
         # APPROVED: http/2 baseline protocol handler — latency benchmark tested, fallback from http/1.1 when multiplexing needed
         if not self._httpx_client:
             raise RuntimeError("httpx not available")
-        # httpx >= 0.28 removed the `proxies=` mapping in favour of `proxy=`
-        try:
-            resp = await self._httpx_client.request(
-                method=method, url=url, params=params, headers=headers,
-                proxy=proxy_url, **kwargs
-            )
-        except TypeError:
-            proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
-            resp = await self._httpx_client.request(
-                method=method, url=url, params=params, headers=headers,
-                proxies=proxies, **kwargs
-            )
+        # httpx has no per-request proxy argument (neither `proxy=` nor
+        # `proxies=`); the proxy is bound when the client is constructed. Cache
+        # one client per proxy URL so connections are still pooled.
+        client = self._httpx_client
+        if proxy_url:
+            client = self._httpx_proxied.get(proxy_url)
+            if client is None:
+                client = httpx.AsyncClient(http2=True, timeout=30.0, proxy=proxy_url)
+                self._httpx_proxied[proxy_url] = client
+                # bound the cache; close evicted clients off the hot path
+                if len(self._httpx_proxied) > MAX_PROXIED_CLIENTS:
+                    _, stale = self._httpx_proxied.popitem()
+                    asyncio.create_task(_close_quietly(stale))
+        resp = await client.request(method=method, url=url, params=params,
+                                    headers=headers, **kwargs)
         # APPROVED: http/2 multiplexing fallback — http/1.1 baseline retained, latency ms benchmark tested
         return CachedResponse(status=resp.status_code, content=resp.content, headers=dict(resp.headers), timestamp=0, ttl=0, protocol="http/2")
 

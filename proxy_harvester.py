@@ -493,8 +493,6 @@ class UpstreamHarvester:
         for source, proxies, error in results:
             fresh = [p for p in proxies if include_seen or p["url"] not in self._seen]
             self._last[source.name] = proxies
-            if not include_seen:
-                self._seen.update(p["url"] for p in proxies)
             # a full snapshot (include_seen=True) says nothing about *new* yield
             self.health.record(source.name, len(proxies),
                                0 if include_seen else len(fresh),
@@ -505,6 +503,11 @@ class UpstreamHarvester:
                     continue
                 emitted.add(proxy["url"])
                 out.append(proxy)
+                # Record exactly what was returned: candidates beyond
+                # max_per_source must stay eligible for the next sweep, and a
+                # URL dropped here must not be marked seen by a later source.
+                if not include_seen:
+                    self._seen.add(proxy["url"])
 
         healthy = sum(1 for _, _, error in results if error is None)
         logger.info("harvested %d new proxies from %d/%d sources",
@@ -531,6 +534,14 @@ class HoneypotDetector:
     When no baseline can be established (offline, endpoint down) the detector
     fails *open* — returning "no-baseline" — because a missing baseline must not
     silently empty the pool.
+
+    Scope limit worth stating plainly: the probe URL is HTTPS, so an HTTP proxy
+    can only tunnel the connection and cannot rewrite the body without breaking
+    TLS. In practice this catches proxies that intercept, redirect or MITM at
+    the CONNECT stage (surfacing as a status change, a TLS error or a body that
+    is not the expected document), and it catches plain-HTTP tampering when
+    pointed at an ``http://`` test URL. It is not a general "detect any
+    malicious proxy" oracle.
     """
 
     TEST_URL = "https://httpbin.org/json"
@@ -602,7 +613,10 @@ class HoneypotDetector:
         if use_cache and cached and time.time() - cached[0] < self.verdict_ttl:
             return cached[1], cached[2]
         if not self.has_baseline:
-            return True, "no-baseline"
+            # A baseline can expire (baseline_ttl) or never have existed; try
+            # once more rather than failing open for the rest of the process.
+            if not await self.establish_baseline():
+                return True, "no-baseline"
         try:
             import httpx
             async with httpx.AsyncClient(timeout=self.timeout, proxy=proxy_url,

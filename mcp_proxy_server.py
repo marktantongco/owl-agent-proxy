@@ -285,8 +285,12 @@ class ProxyBackend:
         if not metrics:
             return {"valid": False, "url": proxy_url, "trusted": False,
                     "reason": "tcp-or-http-probe-failed"}
+        if not metrics.get("ok"):
+            # reachable socket but no usable HTTP response: never "trusted"
+            return {"valid": False, "url": proxy_url, "trusted": False,
+                    "reason": f"http-probe-failed-status-{metrics.get('status')}", **metrics}
         detector = HoneypotDetector()
-        if metrics.get("ok") and await detector.establish_baseline():
+        if await detector.establish_baseline():
             trusted, reason = await detector.check(proxy_url)
         else:
             trusted, reason = True, "no-baseline"
@@ -454,7 +458,11 @@ class OwlMcpServer:
         try:
             while not self.should_exit:
                 try:
-                    message = read_message(stream)
+                    # Reading stdin is blocking; run it in a worker thread so
+                    # the pool's harvest/validation tasks keep progressing
+                    # while the host is idle. Exit happens after a message is
+                    # processed, so no read is left pending.
+                    message = await asyncio.to_thread(read_message, stream)
                 except ProtocolError as exc:
                     self.write(_err(None, exc.code, exc.message))
                     continue

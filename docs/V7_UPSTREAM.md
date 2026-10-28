@@ -100,8 +100,16 @@ for the same URL fetched through a candidate proxy. It flags:
 
 Fail-open by design: if no baseline can be established (offline, endpoint down,
 captive portal) the detector returns `no-baseline` instead of rejecting the
-whole pool. Connectivity errors (`error:ConnectTimeout`) are also not treated as
-tampering — only structural mismatch or injection is.
+whole pool, and an expired baseline is refreshed on the next check. Connectivity
+errors (`error:ConnectTimeout`) are also not treated as tampering — only
+structural mismatch or injection is.
+
+**Scope limit:** the probe URL is HTTPS, so an HTTP proxy can only tunnel it and
+cannot rewrite the body without breaking TLS. What this actually catches is
+proxies that intercept or redirect at the CONNECT stage, serve a different
+document, or inject markup when asked for a plain-HTTP URL. It is not a general
+"detect any malicious proxy" oracle, and a proxy that tampers only with
+plain-HTTP traffic to *other* hosts is invisible to it.
 
 ## Sticky sessions
 

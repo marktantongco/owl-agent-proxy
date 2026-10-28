@@ -328,6 +328,31 @@ class TestProxyBackend:
         assert result["reason"] == "tcp-or-http-probe-failed"
         assert backend.started is False
 
+    async def test_failed_http_probe_is_not_trusted(self, monkeypatch):
+        import proxy_harvester
+
+        async def fake_validate(url, timeout=8.0, probe_url=""):
+            return {"url": url, "tcp_ms": 5.0, "http_ms": None,
+                    "ok": False, "status": None}
+
+        monkeypatch.setattr(proxy_harvester, "validate_proxy", fake_validate)
+        backend = ProxyBackend(harvest=False, warmup_seconds=0)
+        result = await backend.validate("http://93.184.216.34:8080")
+        assert result["valid"] is False
+        assert result["trusted"] is False, "a proxy that cannot carry HTTP must not be trusted"
+        assert result["reason"].startswith("http-probe-failed")
+
+    async def test_unreachable_proxy_is_not_trusted(self, monkeypatch):
+        import proxy_harvester
+
+        async def fake_validate(url, timeout=8.0, probe_url=""):
+            return None
+
+        monkeypatch.setattr(proxy_harvester, "validate_proxy", fake_validate)
+        backend = ProxyBackend(harvest=False, warmup_seconds=0)
+        result = await backend.validate("http://93.184.216.34:8080")
+        assert (result["valid"], result["trusted"]) == (False, False)
+
     async def test_pick_with_empty_pool_returns_null(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         backend = ProxyBackend(harvest=False, warmup_seconds=0)

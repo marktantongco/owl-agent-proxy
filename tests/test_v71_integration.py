@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import proxy_harvester
+import proxy_defense as pd
 from proxy_defense import (
     CachedResponse,
     ProxyEntry,
@@ -418,3 +419,89 @@ class TestDeduplicator:
         )
         assert all(isinstance(r, RuntimeError) for r in results)
         assert calls["n"] == 1
+
+
+# ── http/2 proxy plumbing ────────────────────────────────────────────────
+class FakeHttpxClient:
+    """Stands in for httpx.AsyncClient; records constructor kwargs and calls."""
+
+    instances: list = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls = []
+        self.closed = False
+        FakeHttpxClient.instances.append(self)
+
+    async def request(self, **kwargs):
+        self.calls.append(kwargs)
+        return type("Resp", (), {"status_code": 200, "content": b"ok",
+                                 "headers": {"content-type": "text/plain"}})()
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+class TestHttp2Proxies:
+    """httpx has no per-request proxy argument: clients must be bound per proxy."""
+
+    async def _client_with_fakes(self, config_file, monkeypatch):
+        FakeHttpxClient.instances = []
+        monkeypatch.setattr(pd.httpx, "AsyncClient", FakeHttpxClient)
+        client = ResilientClient(auto_load_proxies=False, config_path=config_file())
+        client._httpx_client = FakeHttpxClient(http2=True)
+        return client
+
+    async def test_proxied_request_uses_a_client_bound_to_the_proxy(self, config_file, monkeypatch):
+        client = await self._client_with_fakes(config_file, monkeypatch)
+        await client._request_http2("GET", "https://example.com", None, None,
+                                    "http://93.184.216.34:8080")
+
+        assert len(FakeHttpxClient.instances) == 2          # base + proxied
+        proxied = FakeHttpxClient.instances[1]
+        assert proxied.kwargs == {"http2": True, "timeout": 30.0,
+                                  "proxy": "http://93.184.216.34:8080"}
+        assert proxied.calls[0]["url"] == "https://example.com"
+        # no proxy kwarg leaked into the request call (that is what used to raise)
+        assert "proxy" not in proxied.calls[0]
+
+    async def test_proxied_clients_are_reused(self, config_file, monkeypatch):
+        client = await self._client_with_fakes(config_file, monkeypatch)
+        for _ in range(3):
+            await client._request_http2("GET", "https://example.com", None, None,
+                                        "http://93.184.216.34:8080")
+        assert len(client._httpx_proxied) == 1
+        assert len(FakeHttpxClient.instances) == 2
+
+    async def test_direct_request_uses_the_shared_client(self, config_file, monkeypatch):
+        client = await self._client_with_fakes(config_file, monkeypatch)
+        await client._request_http2("GET", "https://example.com", None, None, None)
+        assert client._httpx_proxied == {}
+        assert client._httpx_client.calls[0]["url"] == "https://example.com"
+
+    async def test_proxied_clients_are_closed_on_exit(self, config_file, monkeypatch):
+        client = await self._client_with_fakes(config_file, monkeypatch)
+        client._session = None
+        await client._request_http2("GET", "https://example.com", None, None,
+                                    "http://93.184.216.34:8080")
+        proxied = FakeHttpxClient.instances[1]
+        await client.__aexit__(None, None, None)
+        assert proxied.closed is True
+        assert client._httpx_proxied == {}
+
+    async def test_proxy_client_cache_is_bounded(self, config_file, monkeypatch):
+        client = await self._client_with_fakes(config_file, monkeypatch)
+        cap = pd.MAX_PROXIED_CLIENTS
+        for i in range(cap + 3):
+            await client._request_http2("GET", "https://example.com", None, None,
+                                        f"http://93.184.216.{i}:8080")
+        assert len(client._httpx_proxied) <= cap
+        await asyncio.sleep(0)      # let eviction closes run
+
+
+@pytest.mark.asyncio
+class TestConfigPlumbing:
+    async def test_max_per_source_is_passed_to_the_rotator(self, config_file):
+        client = ResilientClient(config_path=config_file(max_per_source=42))
+        assert client.rotator.max_per_source == 42

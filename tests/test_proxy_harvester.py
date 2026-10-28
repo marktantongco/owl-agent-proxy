@@ -332,6 +332,20 @@ class TestUpstreamHarvester:
         harvester = UpstreamHarvester()
         assert harvester._client is None
 
+    async def test_candidates_beyond_cap_stay_eligible(self):
+        """Only proxies actually emitted may be marked as seen."""
+        src = make_source("a", "https://a.invalid/a.json")
+        items = [public_item(ip=f"93.184.216.{i}") for i in range(1, 4)]
+        harvester = UpstreamHarvester(sources=[src],
+                                      client=FakeClient({src.url: FakeResponse(items)}))
+
+        seen_urls = []
+        for _ in range(3):
+            batch = await harvester.harvest(max_per_source=1)
+            assert len(batch) == 1, batch
+            seen_urls.extend(p["url"] for p in batch)
+        assert len(set(seen_urls)) == 3, seen_urls      # nothing was starved
+
 
 # ── honeypot detector ─────────────────────────────────────────────────────
 class TestHoneypotDetector:
@@ -355,6 +369,39 @@ class TestHoneypotDetector:
         detector = HoneypotDetector()
         trusted, reason = await detector.check("http://93.184.216.34:8080")
         assert trusted is True and reason == "no-baseline"
+
+    async def test_expired_baseline_is_re_established(self):
+        detector = HoneypotDetector(baseline_ttl=1)
+        detector._baseline = "stale"
+        detector._baseline_at = time.time() - 10
+        assert detector.has_baseline is False
+
+        calls = {"n": 0}
+
+        async def fake_establish():
+            calls["n"] += 1
+            return False
+
+        detector.establish_baseline = fake_establish
+        trusted, reason = await detector.check("http://127.0.0.1:9")
+        assert calls["n"] == 1, "expired baseline was not refreshed"
+        assert (trusted, reason) == (True, "no-baseline")
+
+    async def test_check_does_not_refresh_within_ttl(self):
+        detector = HoneypotDetector(baseline_ttl=3600)
+        detector._baseline = "fresh"
+        detector._baseline_at = time.time()
+
+        calls = {"n": 0}
+
+        async def fake_establish():
+            calls["n"] += 1
+            return True
+
+        detector.establish_baseline = fake_establish
+        trusted, reason = await detector.check("http://127.0.0.1:9")
+        assert calls["n"] == 0
+        assert reason != "no-baseline"      # it actually probed, and failed to connect
 
     def test_skeleton_types(self):
         skeleton = HoneypotDetector._skeleton({"a": [1, "x", {"b": 2.5}]})
