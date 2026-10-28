@@ -4,7 +4,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI/CD](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
+[![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
+[![Tests](https://img.shields.io/badge/tests-148%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -558,39 +559,30 @@ bash .github/scripts/ci-check.sh
 
 ### GitHub Actions
 
-`.github/workflows/protocol-check.yml` runs the escalation/credential guard on
-PRs and pushes to `main`.
+[`.github/workflows/protocol-check.yml`](.github/workflows/protocol-check.yml)
+runs on every pull request to `main`/`develop`, on pushes to `main`, and on
+demand. Three jobs:
 
-Two further jobs — `pytest` on Python 3.10/3.11/3.12 and an installer smoke test
-that installs into a throwaway `HOME` twice (fresh install, then an idempotent
-re-run) before re-verifying with `--verify-only --no-live` — are staged in
-[`docs/ci/protocol-check.yml`](docs/ci/protocol-check.yml). They are parked
-there only because workflow files require the `Workflows: Read and write`
-permission, which some automation tokens lack. Activate them with:
+| Job | What it proves |
+|-----|----------------|
+| `protocol-check` | Every protocol escalation is justified (`# APPROVED:` + evidence) and no proxy credentials are committed |
+| `tests` | `pytest` on Python 3.10, 3.11 and 3.12, plus the MCP protocol selftest |
+| `installer` | A fresh install into a throwaway `OWL_HOME`, an idempotent re-run, then `--verify-only --no-live` |
+
+Run the same checks by hand:
 
 ```bash
-sed '1,/^$/d' docs/ci/protocol-check.yml > .github/workflows/protocol-check.yml
-git add .github/workflows/protocol-check.yml
-git commit -m "ci: pytest matrix + installer smoke" && git rm -q docs/ci/protocol-check.yml
+bash .github/scripts/ci-check.sh                    # escalation + credential guard
+python -m pytest -q                                 # 148 tests
+python mcp_proxy_server.py --selftest               # MCP protocol
+./install-owl.sh --no-live                          # installer + verification
 ```
 
-Automatically runs on every PR to `main` or `develop`:
-
-```yaml
-# .github/workflows/protocol-check.yml
-name: 🦉 OWL-AGENT Protocol Check
-on:
-  pull_request:
-    branches: [main, develop]
-jobs:
-  protocol-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          chmod +x .github/scripts/ci-check.sh
-          .github/scripts/ci-check.sh
-```
+> **CodeQL:** this repo uses GitHub's default code-scanning setup. Do not add an
+> advanced-configuration `codeql.yml` alongside it — GitHub cannot process that
+> SARIF (`CodeQL analyses from advanced configurations cannot be processed when
+> the default setup is enabled`), which is what failed `Analyze (actions)` on an
+> earlier PR.
 
 ---
 
@@ -637,7 +629,7 @@ owl-agent-proxy/
 │   ├── scripts/
 │   │   └── ci-check.sh           # Escalation + credential guard
 │   └── workflows/
-│       └── protocol-check.yml    # CI: guard + pytest (3.10–3.12) + installer smoke
+│       └── protocol-check.yml    # guard + pytest (3.10–3.12) + installer smoke
 ├── config/
 │   ├── AGENTS.md                 # Agent system prompt
 │   ├── opencode.json             # OpenCode plugin configuration

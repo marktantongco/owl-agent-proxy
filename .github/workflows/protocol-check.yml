@@ -1,15 +1,3 @@
-# ⚠️ PENDING APPLY — staged copy, not an active workflow. The lines above the
-# first blank line are this header, not YAML. Activate with:
-#
-#     sed '1,/^$/d' docs/ci/protocol-check.yml > .github/workflows/protocol-check.yml
-#     git add .github/workflows/protocol-check.yml
-#     git commit -m "ci: run pytest matrix and installer smoke test"
-#     git push
-#
-# Then delete docs/ci/protocol-check.yml in the same commit.
-#
-name: 🦉 OWL-AGENT Checks
-
 on:
   pull_request:
     branches: [main, develop]
