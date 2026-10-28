@@ -36,7 +36,7 @@ class TestTokenBucket(unittest.TestCase):
             bucket = TokenBucket(rate=1.0, capacity=5.0, tokens=5.0)
             result = await bucket.acquire(1.0)
             self.assertTrue(result)
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 class TestProxyEntry(unittest.TestCase):
@@ -66,14 +66,14 @@ class TestHTTPCache(unittest.TestCase):
             result = await cache.get("GET", "https://example.com")
             self.assertIsNotNone(result)
             self.assertEqual(result.status, 200)
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_cache_miss(self):
         async def run():
             cache = HTTPCache(ttl=300)
             result = await cache.get("GET", "https://example.com")
             self.assertIsNone(result)
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 class TestProxyRotator(unittest.TestCase):
@@ -82,7 +82,7 @@ class TestProxyRotator(unittest.TestCase):
             rotator = ProxyRotator(proxies=[])
             result = await rotator.get_proxy()
             self.assertIsNone(result)
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_rotates_through_proxies(self):
         async def run():
@@ -94,7 +94,7 @@ class TestProxyRotator(unittest.TestCase):
             p1 = await rotator.get_proxy()
             p2 = await rotator.get_proxy()
             self.assertNotEqual(p1.url, p2.url)
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

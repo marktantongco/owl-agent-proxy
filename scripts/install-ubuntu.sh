@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🦉 OWL-AGENT PROXY DEFENSE STACK v3.0 — Ubuntu Installer
+# 🦉 OWL-AGENT PROXY DEFENSE STACK v7.1 — Ubuntu system installer
 # ═══════════════════════════════════════════════════════════════════════════════
 # Usage:
 #   chmod +x scripts/install-ubuntu.sh
@@ -10,6 +10,9 @@ set -euo pipefail
 #   ./scripts/install-ubuntu.sh --user            # user-only (no sudo)
 #   ./scripts/install-ubuntu.sh --minimal         # Phase 1 only (http/1.1)
 #   ./scripts/install-ubuntu.sh --verify          # verify existing install
+#
+# Module install, configuration and verification are delegated to install-owl.sh
+# (repo root) so there is exactly one canonical layout: ~/.owl-agent.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 REPO_URL="https://github.com/marktantongco/owl-agent-proxy.git"
@@ -161,7 +164,7 @@ install_phase3_ja3() {
     header "Phase 3: JA3 / TLS Fingerprint"
     source "$VENV_DIR/bin/activate"
     info "Installing curl_cffi..."
-    pip install --quiet curl-cffi>=0.10.0 2>&1 | tail -1
+    pip install --quiet 'curl-cffi>=0.10.0' 2>&1 | tail -1
     $PYTHON -c "from curl_cffi.requests import AsyncSession; print('    ✓ JA3 available')" 2>&1 || warn "curl_cffi import failed (non-fatal)"
     pass "JA3 installed"
 }
@@ -170,7 +173,7 @@ install_phase4_websocket() {
     header "Phase 4: WebSocket"
     source "$VENV_DIR/bin/activate"
     info "Installing websockets..."
-    pip install --quiet websockets>=15.0.0 2>&1 | tail -1
+    pip install --quiet 'websockets>=15.0.0' 2>&1 | tail -1
     $PYTHON -c "import websockets; print('    ✓ WebSocket available')" 2>&1 || warn "websockets import failed (non-fatal)"
     pass "WebSocket installed"
 }
@@ -179,7 +182,7 @@ install_phase5_browser() {
     header "Phase 5: Browser Automation"
     source "$VENV_DIR/bin/activate"
     info "Installing Playwright..."
-    pip install --quiet playwright>=1.52.0 2>&1 | tail -1
+    pip install --quiet 'playwright>=1.52.0' 2>&1 | tail -1
     info "Installing Chromium browser (~150 MB)..."
     $PYTHON -m playwright install chromium 2>&1 | tail -1
     $PYTHON -c "from playwright.async_api import async_playwright; print('    ✓ Browser available')" 2>&1 || warn "playwright import failed (non-fatal)"
@@ -240,7 +243,8 @@ if [ -f "$OWL_AGENT_VENV/bin/activate" ] && [ -z "${VIRTUAL_ENV:-}" ]; then
 fi
 
 alias owl-status='echo "🦉 Owl Agent Status" && echo "  Skills: $(find "$OWL_AGENT_SKILLS" -name "*.md" 2>/dev/null | wc -l)" && echo "  Cache: $(ls "$OWL_AGENT_CACHE/http" 2>/dev/null | wc -l) entries" && python3 --version && echo "  Venv: $OWL_AGENT_VENV"'
-alias owl-proxy='python3 "$OWL_AGENT_WORKSPACE/projects/proxy_defense.py"'
+alias owl-proxy='$OWL_AGENT_HOME/run.sh'
+alias owl-mcp='$OWL_AGENT_HOME/run.sh mcp-selftest'
 alias owl-skills='ls -la "$OWL_AGENT_SKILLS"'
 alias owl-logs='tail -f "$OWL_AGENT_LOGS/opencode.log" 2>/dev/null || echo "No logs yet"'
 alias owl-cache='ls -la "$OWL_AGENT_CACHE/http"'
@@ -268,13 +272,25 @@ SHELL
 
 copy_source_files() {
     header "Copying Source Files"
-    mkdir -p "$WORKSPACE_DIR/projects"
-    cp "$INSTALL_DIR/proxy_defense.py" "$WORKSPACE_DIR/projects/proxy_defense.py"
-    cp "$INSTALL_DIR/requirements.txt" "$WORKSPACE_DIR/projects/requirements.txt"
     cp -r "$INSTALL_DIR/skills/"* "$SKILLS_DIR/" 2>/dev/null || true
-    cp -r "$INSTALL_DIR/docs/"* "$WORKSPACE_DIR/projects/" 2>/dev/null || true
-    chmod +x "$WORKSPACE_DIR/projects/proxy_defense.py"
-    pass "Source files deployed"
+    pass "Skills deployed"
+
+    # Canonical install (venv, modules, config merge, verification).
+    if [[ -f "$INSTALL_DIR/install-owl.sh" ]]; then
+        info "Delegating to install-owl.sh (canonical layout: $HOME/.owl-agent)"
+        if OWL_HOME="$HOME/.owl-agent" PYTHON="$PYTHON" bash "$INSTALL_DIR/install-owl.sh" --no-live; then
+            pass "OWL-AGENT stack installed and verified"
+        else
+            fail "install-owl.sh reported failures — review the output above"
+            ((ERRORS++))
+        fi
+    else
+        warn "install-owl.sh not found — copying modules directly"
+        cp "$INSTALL_DIR/proxy_defense.py" "$HOME/.owl-agent/proxy_defense.py"
+        cp "$INSTALL_DIR/proxy_harvester.py" "$HOME/.owl-agent/proxy_harvester.py" 2>/dev/null || true
+        cp "$INSTALL_DIR/mcp_proxy_server.py" "$HOME/.owl-agent/mcp_proxy_server.py" 2>/dev/null || true
+        chmod +x "$HOME/.owl-agent/proxy_defense.py"
+    fi
 }
 
 run_validation() {
@@ -297,8 +313,11 @@ run_validation() {
     fi
 
     info "Running integration test..."
-    cd "$WORKSPACE_DIR/projects"
-    $PYTHON proxy_defense.py 2>&1 || warn "Integration test failed"
+    if [[ -x "$HOME/.owl-agent/run.sh" ]]; then
+        "$HOME/.owl-agent/run.sh" stats 2>&1 || warn "Stack stats failed"
+    else
+        $PYTHON "$INSTALL_DIR/proxy_defense.py" stats 2>&1 || warn "Integration test failed"
+    fi
 
     info "Protocol availability:"
     $PYTHON -c "
@@ -316,21 +335,23 @@ print(f'  browser: {\"✅\" if PLAYWRIGHT_AVAILABLE else \"⬜\"} available')
 print_summary() {
     header "Installation Complete"
     echo ""
-    echo "  🦉 OWL-AGENT Proxy Defense Stack v3.0"
+    echo "  🦉 OWL-AGENT Proxy Defense Stack v7.1"
     echo ""
     echo "  Repository:     $INSTALL_DIR"
     echo "  Virtual Env:    $VENV_DIR"
     echo "  Config:         $CONFIG_DIR"
     echo "  Cache:          $CACHE_DIR"
-    echo "  Source:         $WORKSPACE_DIR/projects/proxy_defense.py"
+    echo "  Modules:        $HOME/.owl-agent/{proxy_defense,proxy_harvester,mcp_proxy_server}.py"
+  echo "  Launcher:       $HOME/.owl-agent/run.sh"
     echo ""
     echo "  Commands:"
     echo "    source ~/.bashrc          # reload shell integration"
     echo "    owl-status                # show agent status"
-    echo "    owl-proxy                 # run proxy defense test"
+    echo "    owl-proxy                 # stack launcher (stats case)"
     echo "    owl-venv                  # activate virtual env"
     echo "    owl-skills                # list installed skills"
-    echo "    python proxy_defense.py   # run built-in test"
+    echo "    ~/.owl-agent/run.sh stats # pool + source telemetry"
+    echo "    ~/.owl-agent/run.sh verify --no-live"
     echo ""
     echo "  Install protocols on demand:"
     echo "    pip install httpx[http2]     # HTTP/2"

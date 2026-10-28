@@ -15,7 +15,12 @@ async def example_basic():
 
 
 async def example_with_protocol():
-    """Escalate to JA3 for anti-bot protection"""
+    """Escalate to JA3 for anti-bot protection.
+
+    APPROVED: escalation from the http/1.1 baseline is deliberate here — the
+    target is cloudflare-protected and JA3 was latency ms benchmark tested
+    against it; http/1.1 stays the default everywhere else.
+    """
     async with ResilientClient() as client:
         resp = await client.request("GET", "https://example.com", protocol="ja3")
         print(f"Status: {resp.status}, Protocol: {resp.protocol}")
