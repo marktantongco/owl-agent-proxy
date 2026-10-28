@@ -1,0 +1,79 @@
+# ⚠️ PENDING APPLY — this is a staged copy, not an active workflow.
+#
+# GitHub App tokens without the `Workflows: Read and write` permission cannot
+# create or update files under .github/workflows/. Activate this change with:
+#
+#     cp docs/ci/protocol-check.yml .github/workflows/protocol-check.yml
+#     git add .github/workflows/protocol-check.yml
+#     git commit -m "ci: run pytest matrix and installer smoke test"
+#     git push
+#
+# Then delete this staged copy (and this header) in the same commit.
+#
+name: 🦉 OWL-AGENT Checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  protocol-check:
+    name: Protocol escalation + credential guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          chmod +x .github/scripts/ci-check.sh
+          .github/scripts/ci-check.sh
+
+  tests:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Unit + integration tests
+        run: python -m pytest -q
+      - name: MCP protocol selftest
+        run: python mcp_proxy_server.py --selftest
+
+  installer:
+    name: Installer smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install into a throwaway HOME
+        env:
+          OWL_HOME: ${{ runner.temp }}/owl-agent
+          PYTHON: python
+        run: |
+          chmod +x install-owl.sh scripts/verify-install.py
+          ./install-owl.sh --no-live
+      - name: Re-run installer (idempotency)
+        env:
+          OWL_HOME: ${{ runner.temp }}/owl-agent
+          PYTHON: python
+          OWL_SKIP_VERIFY: "1"
+        run: ./install-owl.sh
+      - name: Verify existing install
+        env:
+          OWL_HOME: ${{ runner.temp }}/owl-agent
+        run: ./install-owl.sh --verify-only --no-live

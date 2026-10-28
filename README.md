@@ -558,10 +558,20 @@ bash .github/scripts/ci-check.sh
 
 ### GitHub Actions
 
-`.github/workflows/protocol-check.yml` runs three jobs on PRs (and pushes to
-`main`): the escalation/credential guard, `pytest` on Python 3.10/3.11/3.12, and
-an installer smoke test that installs into a throwaway `HOME` twice (install +
-idempotent re-run) and then re-verifies with `--verify-only --no-live`.
+`.github/workflows/protocol-check.yml` runs the escalation/credential guard on
+PRs and pushes to `main`.
+
+Two further jobs — `pytest` on Python 3.10/3.11/3.12 and an installer smoke test
+that installs into a throwaway `HOME` twice (fresh install, then an idempotent
+re-run) before re-verifying with `--verify-only --no-live` — are staged in
+[`docs/ci/protocol-check.yml`](docs/ci/protocol-check.yml). They are parked
+there only because workflow files require the `Workflows: Read and write`
+permission, which some automation tokens lack. Activate them with:
+
+```bash
+cp docs/ci/protocol-check.yml .github/workflows/protocol-check.yml
+git add .github/workflows/protocol-check.yml && git commit -m "ci: pytest matrix + installer smoke"
+```
 
 Automatically runs on every PR to `main` or `develop`:
 
