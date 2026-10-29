@@ -150,6 +150,17 @@ fi
 PY_VER="$("$PY_SYSTEM" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 info "Python $PY_VER ($PY_SYSTEM)"
 
+# requirements.txt pins exact versions. Those pins are reproducible on the
+# interpreters the wheels were built for, but a newer interpreter (Arch ships the
+# newest CPython) often has no wheel for them, so pip falls back to building from
+# source — orjson/cryptography need a Rust toolchain at that point. Allow a
+# relaxed-pin retry on a newer interpreter; keep strict pins everywhere else.
+PY_MINOR="${PY_VER#*.}"
+RELAX_FALLBACK=0
+if [[ "$(printf '%s\n' "13" "$PY_MINOR" | sort -V | head -n1)" == "13" ]]; then
+  RELAX_FALLBACK=1
+fi
+
 # A mise / asdf / pyenv shim ties the venv to one interpreter version: switching
 # runtimes later leaves a silently broken venv. omArchy manages runtimes with
 # mise, so this is the common case there, not an edge case.
@@ -201,7 +212,30 @@ PY="$VENV/bin/python"
 step "Dependencies"
 "$PY" -m pip install -q --upgrade pip setuptools wheel 2>/dev/null || warn "pip self-upgrade skipped"
 info "installing core requirements"
-if ! "$PY" -m pip install -q -r "$SRC/requirements.txt"; then
+install_requirements() {
+  local reqs="$1" relaxed=0
+  if "$PY" -m pip install -q -r "$reqs"; then
+    return 0
+  fi
+  if [[ "$RELAX_FALLBACK" == "1" ]]; then
+    warn "pinned install failed on Python $PY_VER — retrying with relaxed bounds"
+    warn "(no wheel exists for the pinned versions on this interpreter)"
+    local tmp; tmp="$(mktemp)"
+    sed -E 's/==/>=/g' "$reqs" > "$tmp"
+    if "$PY" -m pip install -q -r "$tmp"; then
+      rm -f "$tmp"
+      relaxed=1
+      INSTALL_RELAXED=1
+      warn "installed with relaxed pins — versions will differ from requirements.txt"
+      "$PY" -m pip list 2>/dev/null | grep -Ei "^(aiohttp|orjson|cryptography|httpx) " || true
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
+  return 1
+}
+
+if ! install_requirements "$SRC/requirements.txt"; then
   die "core dependencies failed — check your network/pip config, then re-run"
 fi
 "$PY" -c "import aiohttp, aiofiles, httpx" || die "core imports failed after install"
