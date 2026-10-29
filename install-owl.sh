@@ -26,6 +26,7 @@
 #   OWL_HOME      install root (default ~/.owl-agent)
 #   OWL_SOURCE    source directory (default: directory containing this script)
 #   PYTHON        interpreter used to build the venv (default python3)
+#   OWL_OS_RELEASE  os-release file for distro detection (default /etc/os-release)
 # ══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -47,7 +48,9 @@ step() { echo -e "\n${BLU}── $* ──${NC}"; }
 die()  { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
 
 usage() {
-  sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block, stopping at the first non-comment line, so
+  # editing the header can never leak code into --help.
+  awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print; next } exit }' "${BASH_SOURCE[0]}"
 }
 
 # ── arguments ────────────────────────────────────────────────────────────────
