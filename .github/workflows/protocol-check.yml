@@ -14,6 +14,8 @@ jobs:
       - run: |
           chmod +x .github/scripts/ci-check.sh
           .github/scripts/ci-check.sh
+      - name: No broad exception handler swallows silently
+        run: python .github/scripts/check-swallows.py
 
   skills:
     name: Skill packaging

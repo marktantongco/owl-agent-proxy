@@ -85,8 +85,8 @@ async def _close_quietly(client) -> None:
     """Close a client without letting an error surface as an unhandled task."""
     try:
         await client.aclose()
-    except Exception:
-        pass
+    except Exception:  # a dead socket cannot be closed; shutdown must not raise
+        logger.debug("client close failed", exc_info=True)
 
 
 def _load_harvester():
@@ -553,8 +553,8 @@ class ProxyRotator:
                     await task
                 except asyncio.CancelledError:
                     pass
-                except Exception:
-                    pass
+                except Exception:  # keep shutting down even if a worker died badly
+                    logger.debug("background task raised during shutdown", exc_info=True)
         self._harvest_task = None
         self._validation_task = None
         for task in list(self._validation_tasks):
@@ -566,8 +566,8 @@ class ProxyRotator:
         if self._harvester is not None:
             try:
                 await self._harvester.__aexit__(None, None, None)
-            except Exception:
-                pass
+            except Exception:  # the harvester may already be torn down
+                logger.debug("harvester shutdown failed", exc_info=True)
             self._harvester = None
         self.save_cache()
 

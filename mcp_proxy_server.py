@@ -237,7 +237,8 @@ class ProxyBackend:
         try:
             stats = await self._client.get_stats()
             return int(stats.get("proxies_healthy", 0))
-        except Exception:
+        except Exception:  # warmup probe: a failing pool is not a protocol error
+            logger.debug("get_stats failed during warmup; treating pool as empty", exc_info=True)
             return 0
 
     # ── tools ──
