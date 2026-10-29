@@ -417,6 +417,25 @@ async def main():
 asyncio.run(main())
 ```
 
+#### Custom pool backend
+
+The request path depends on the `PoolBackend` protocol, not on `ProxyRotator`
+directly. Anything that satisfies it — a paid residential provider, a
+Redis-backed pool, a test double — can be injected without editing core:
+
+```python
+from proxy_defense import ResilientClient
+
+async with ResilientClient(pool=MyPaidPool()) as client:
+    resp = await client.request("GET", "https://example.com")
+```
+
+`PoolBackend` requires `get_proxy`, `mark_banned`, `load_all_sources`,
+`load_cache`, `save_cache`, `start_upstream`, `stop_upstream`,
+`session_stats`, `source_health`, `upstream_stats` and a `proxies` list.
+`ProxyRotator` remains the default implementation; its upstream lifecycle lives
+in `UpstreamHarvestingMixin` so selection and harvesting are read separately.
+
 #### With Custom Headers and Params
 ```python
 async def main():
