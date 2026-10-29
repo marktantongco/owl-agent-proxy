@@ -561,11 +561,12 @@ bash .github/scripts/ci-check.sh
 
 [`.github/workflows/protocol-check.yml`](.github/workflows/protocol-check.yml)
 runs on every pull request to `main`/`develop`, on pushes to `main`, and on
-demand. Three jobs:
+demand. Four jobs:
 
 | Job | What it proves |
 |-----|----------------|
 | `protocol-check` | Every protocol escalation is justified (`# APPROVED:` + evidence) and no proxy credentials are committed |
+| `skills` | Every `SKILL.md` is well-formed and discoverable by the `skills` CLI |
 | `tests` | `pytest` on Python 3.10, 3.11 and 3.12, plus the MCP protocol selftest |
 | `installer` | A fresh install into a throwaway `OWL_HOME`, an idempotent re-run, then `--verify-only --no-live` |
 
@@ -703,7 +704,31 @@ protocol="browser"  # APPROVED: Akamai requires full browser
 
 ## Skills System
 
-The `skills/` directory contains reusable agent skills for common workflows. Each skill is a markdown file with context, instructions, constraints, and examples.
+Skills are packaged in the [Agent Skills](https://skills.sh) layout, so the `skills` CLI can
+discover them and install them into any supported agent host.
+
+A valid skill is `skills/<name>/SKILL.md` with YAML frontmatter declaring at least `name`
+(lowercase kebab-case, matching the directory) and `description`. The CLI **silently ignores**
+flat markdown files with no frontmatter — which is why the legacy files below are listed apart.
+
+| Skill | Purpose |
+|-------|---------|
+| `owl-proxy` | Install and operate the stack: launcher commands, Python API, adding a `ProxySource`, honest limits |
+| `owl-proxy-mcp` | Wire the stdio MCP server into an agent host: tool table, the pick→fetch→rotate loop, failure modes |
+
+```bash
+skills add marktantongco/owl-agent-proxy --skill owl-proxy      # install into this project
+skills add . --skill '*' -l                                     # list local skills without installing
+python .github/scripts/check-skills.py                          # validate packaging (what CI runs)
+```
+
+The `skills` CI job fails the build on a malformed or undiscoverable skill, so packaging cannot
+regress as skills are added.
+
+### Legacy prompt files (not discoverable — migration pending)
+
+These carry useful prompt content but have no frontmatter, so `skills add` finds **0** skills in
+this directory today. They are slated for migration to `skills/<name>/SKILL.md`.
 
 | Skill | Purpose | Trigger |
 |-------|---------|---------|
