@@ -93,13 +93,73 @@ if [[ "$MODE" == "rollback" ]]; then
   exit 0
 fi
 
+# ── platform detection ───────────────────────────────────────────────────────
+# Remediation hints must match the host. "apt install python3-venv" is a dead end
+# on Arch, where venv is bundled with `python` and no such package exists.
+DISTRO_ID="unknown"
+DISTRO_PRETTY="unknown"
+OS_RELEASE_FILE="${OWL_OS_RELEASE:-/etc/os-release}"   # overridable so the detection is testable
+if [[ -r "$OS_RELEASE_FILE" ]]; then
+  DISTRO_ID="$(. "$OS_RELEASE_FILE" 2>/dev/null; printf '%s' "${ID:-unknown}")"
+  DISTRO_PRETTY="$(. "$OS_RELEASE_FILE" 2>/dev/null; printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")"
+fi
+
+case "$DISTRO_ID" in
+  arch|manjaro|endeavouros|cachyos|garuda|artix)
+    PKG_MGR="pacman"
+    SYS_PY="/usr/bin/python"
+    PY_PKG_HINT="sudo pacman -S python"
+    VENV_PKG_HINT="venv is bundled with the 'python' package on Arch — no separate package needed" ;;
+  debian|ubuntu|linuxmint|pop|raspbian)
+    PKG_MGR="apt"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo apt install python3"
+    VENV_PKG_HINT="sudo apt install python3-venv" ;;
+  fedora|rhel|centos|rocky|almalinux)
+    PKG_MGR="dnf"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo dnf install python3"
+    VENV_PKG_HINT="venv ships with python3 — reinstall python3" ;;
+  alpine)
+    PKG_MGR="apk"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo apk add python3"
+    VENV_PKG_HINT="venv ships with python3 — reinstall python3" ;;
+  opensuse*|sles|sled)
+    PKG_MGR="zypper"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo zypper install python3"
+    VENV_PKG_HINT="sudo zypper install python3-base" ;;
+  *)
+    PKG_MGR="unknown"
+    SYS_PY="python3"
+    PY_PKG_HINT="install Python 3.10+ with your package manager"
+    VENV_PKG_HINT="install your distro's Python venv package" ;;
+esac
+
 # ── preflight ────────────────────────────────────────────────────────────────
 step "Preflight"
-[[ -n "$PY_SYSTEM" ]] || die "python3 not found — install Python 3.10+ first"
+info "Platform: $DISTRO_PRETTY (id=$DISTRO_ID, pkg=$PKG_MGR)"
+if [[ "$DISTRO_ID" == "arch" ]] && [[ -d /usr/share/omarchy || -d "$HOME/.local/share/omarchy" ]]; then
+  info "omArchy detected — Arch + Hyprland"
+fi
+
+[[ -n "$PY_SYSTEM" ]] || die "python3 not found — $PY_PKG_HINT"
 "$PY_SYSTEM" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' \
-  || die "Python ≥ 3.10 required (found $("$PY_SYSTEM" -V 2>&1))"
+  || die "Python ≥ 3.10 required (found $("$PY_SYSTEM" -V 2>&1)) — $PY_PKG_HINT"
 PY_VER="$("$PY_SYSTEM" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 info "Python $PY_VER ($PY_SYSTEM)"
+
+# A mise / asdf / pyenv shim ties the venv to one interpreter version: switching
+# runtimes later leaves a silently broken venv. omArchy manages runtimes with
+# mise, so this is the common case there, not an edge case.
+case "$PY_SYSTEM" in
+  */mise/*|*/.asdf/*|*/.pyenv/*|*/.rtx/*)
+    warn "Python is managed by mise/asdf/pyenv — the venv is pinned to $PY_VER."
+    warn "To survive a runtime switch, reinstall with a system interpreter:"
+    warn "  PYTHON=$SYS_PY ./install-owl.sh"
+    ;;
+esac
 
 if [[ "$MODE" == "verify" ]]; then
   [[ -x "$VENV/bin/python" ]] || die "no venv at $VENV — install first"
@@ -129,7 +189,7 @@ if [[ -x "$VENV/bin/python" ]]; then
 fi
 if [[ ! -x "$VENV/bin/python" ]]; then
   "$PY_SYSTEM" -m venv --prompt owl-agent "$VENV" \
-    || die "venv creation failed — install python3-venv (Debian/Ubuntu: apt install python3-venv)"
+    || die "venv creation failed — $VENV_PKG_HINT"
   info "created $VENV"
 else
   info "reusing $VENV"

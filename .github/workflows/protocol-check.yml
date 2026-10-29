@@ -76,3 +76,27 @@ jobs:
         env:
           OWL_HOME: ${{ runner.temp }}/owl-agent
         run: ./install-owl.sh --verify-only --no-live
+
+  arch:
+    name: Arch Linux / omArchy (pacman)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Prepare container (checkout needs git; arch image ships none)
+        run: pacman -Sy --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: System packages + install + verify
+        env:
+          OWL_HOME: /tmp/owl-agent
+        run: |
+          chmod +x scripts/install-arch.sh install-owl.sh
+          ./scripts/install-arch.sh --ci --minimal --no-live
+      - name: Re-run installer (idempotency)
+        env:
+          OWL_HOME: /tmp/owl-agent
+          OWL_SKIP_VERIFY: "1"
+        run: ./scripts/install-arch.sh --ci --minimal --no-live
+      - name: Verify existing install
+        env:
+          OWL_HOME: /tmp/owl-agent
+        run: ./install-owl.sh --verify-only --no-live
