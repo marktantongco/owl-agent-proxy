@@ -4,7 +4,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI/CD](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
+[![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
+[![Tests](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -99,7 +100,7 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 148 (harvester, MCP protocol, sticky sessions, cache, config) |
+| Tests | 9 | 150 (harvester, MCP protocol, sticky sessions, cache, config) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
 
 Deep dive: [docs/V7_UPSTREAM.md](docs/V7_UPSTREAM.md).
@@ -558,39 +559,30 @@ bash .github/scripts/ci-check.sh
 
 ### GitHub Actions
 
-`.github/workflows/protocol-check.yml` runs the escalation/credential guard on
-PRs and pushes to `main`.
+[`.github/workflows/protocol-check.yml`](.github/workflows/protocol-check.yml)
+runs on every pull request to `main`/`develop`, on pushes to `main`, and on
+demand. Three jobs:
 
-Two further jobs — `pytest` on Python 3.10/3.11/3.12 and an installer smoke test
-that installs into a throwaway `HOME` twice (fresh install, then an idempotent
-re-run) before re-verifying with `--verify-only --no-live` — are staged in
-[`docs/ci/protocol-check.yml`](docs/ci/protocol-check.yml). They are parked
-there only because workflow files require the `Workflows: Read and write`
-permission, which some automation tokens lack. Activate them with:
+| Job | What it proves |
+|-----|----------------|
+| `protocol-check` | Every protocol escalation is justified (`# APPROVED:` + evidence) and no proxy credentials are committed |
+| `tests` | `pytest` on Python 3.10, 3.11 and 3.12, plus the MCP protocol selftest |
+| `installer` | A fresh install into a throwaway `OWL_HOME`, an idempotent re-run, then `--verify-only --no-live` |
+
+Run the same checks by hand:
 
 ```bash
-sed '1,/^$/d' docs/ci/protocol-check.yml > .github/workflows/protocol-check.yml
-git add .github/workflows/protocol-check.yml
-git commit -m "ci: pytest matrix + installer smoke" && git rm -q docs/ci/protocol-check.yml
+bash .github/scripts/ci-check.sh                    # escalation + credential guard
+python -m pytest -q                                 # 150 tests
+python mcp_proxy_server.py --selftest               # MCP protocol
+./install-owl.sh --no-live                          # installer + verification
 ```
 
-Automatically runs on every PR to `main` or `develop`:
-
-```yaml
-# .github/workflows/protocol-check.yml
-name: 🦉 OWL-AGENT Protocol Check
-on:
-  pull_request:
-    branches: [main, develop]
-jobs:
-  protocol-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          chmod +x .github/scripts/ci-check.sh
-          .github/scripts/ci-check.sh
-```
+> **CodeQL:** this repo uses GitHub's default code-scanning setup. Do not add an
+> advanced-configuration `codeql.yml` alongside it — GitHub cannot process that
+> SARIF (`CodeQL analyses from advanced configurations cannot be processed when
+> the default setup is enabled`), which is what failed `Analyze (actions)` on an
+> earlier PR.
 
 ---
 
@@ -598,7 +590,7 @@ jobs:
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                       # 148 tests, offline
+python -m pytest -q                       # 150 tests, offline + hermetic
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -611,11 +603,14 @@ bash .github/scripts/ci-check.sh          # escalation + credential guard
 |------|-------|--------|
 | `tests/test_proxy_defense.py` | 9 | TTL, token buckets, bans, cache, rotation |
 | `tests/test_proxy_harvester.py` | 62 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
-| `tests/test_v71_integration.py` | 38 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
+| `tests/test_v71_integration.py` | 40 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
 | `tests/test_mcp_server.py` | 39 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
 
-Everything above runs offline; live-egress behaviour is covered by the
-installer's V19/V20 checks, which SKIP without network.
+Everything above runs offline and hermetically: `tests/conftest.py` blocks
+outbound sockets (loopback excepted), so a test can never pass merely because
+the runner happened to have — or lack — connectivity. A test that needs the
+internet must opt in with `@pytest.mark.allow_network`. Live-egress behaviour is
+covered by the installer's V19/V20 checks, which SKIP without network.
 
 ---
 
@@ -637,7 +632,7 @@ owl-agent-proxy/
 │   ├── scripts/
 │   │   └── ci-check.sh           # Escalation + credential guard
 │   └── workflows/
-│       └── protocol-check.yml    # CI: guard + pytest (3.10–3.12) + installer smoke
+│       └── protocol-check.yml    # guard + pytest (3.10–3.12) + installer smoke
 ├── config/
 │   ├── AGENTS.md                 # Agent system prompt
 │   ├── opencode.json             # OpenCode plugin configuration

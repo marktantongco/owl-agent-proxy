@@ -505,3 +505,22 @@ class TestConfigPlumbing:
     async def test_max_per_source_is_passed_to_the_rotator(self, config_file):
         client = ResilientClient(config_path=config_file(max_per_source=42))
         assert client.rotator.max_per_source == 42
+
+
+# ── test hygiene ─────────────────────────────────────────────────────────
+class TestNetworkGuard:
+    """Proves tests/conftest.py actually isolates the suite from the runner."""
+
+    def test_outbound_connection_is_blocked(self):
+        import socket
+
+        with pytest.raises(OSError, match="outbound network access"):
+            socket.create_connection(("1.1.1.1", 80), timeout=0.1)
+
+    def test_loopback_is_allowed(self):
+        import socket
+
+        # nothing listens on port 9, but the guard must not be what rejects it
+        with pytest.raises(OSError) as excinfo:
+            socket.create_connection(("127.0.0.1", 9), timeout=0.2)
+        assert "outbound network access" not in str(excinfo.value)

@@ -365,10 +365,16 @@ class TestHoneypotDetector:
         detector = HoneypotDetector()
         assert detector._hash(b'{"slideshow": {}}') != detector._hash(b'{"other": {}}')
 
-    async def test_no_baseline_fails_open(self):
+    async def test_no_baseline_fails_open(self, monkeypatch):
+        """No baseline -> fail open. Hermetic: never depend on real connectivity."""
         detector = HoneypotDetector()
+
+        async def no_baseline():
+            return False
+
+        monkeypatch.setattr(detector, "establish_baseline", no_baseline)
         trusted, reason = await detector.check("http://93.184.216.34:8080")
-        assert trusted is True and reason == "no-baseline"
+        assert (trusted, reason) == (True, "no-baseline")
 
     async def test_expired_baseline_is_re_established(self):
         detector = HoneypotDetector(baseline_ttl=1)
