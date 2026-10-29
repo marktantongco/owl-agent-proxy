@@ -271,16 +271,21 @@ main() {
     echo ""
 
     check_arch
-    check_python || exit 1
     locate_source
 
+    # --verify inspects an existing install: install nothing, just run it.
     if [[ "$MODE" == "verify" ]]; then
+        check_python || exit 1
         run_verify
         print_summary
         return 0
     fi
 
+    # Python is installed BY install_system_deps, so the interpreter check has to
+    # come after it — on a fresh Arch container there is no python until pacman
+    # has run, and checking first aborts the install before it can fix itself.
     install_system_deps
+    check_python || exit 1
     run_installer
     print_summary
 }
