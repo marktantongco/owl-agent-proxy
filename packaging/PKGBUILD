@@ -18,35 +18,26 @@ pkgdesc="Layered HTTP defense stack: caching, dedupe, rate limiting, sticky prox
 arch=('any')
 url="https://github.com/marktantongco/owl-agent-proxy"
 license=('MIT')
+# Only what the modules actually import. The requirements.txt list is broader
+# (cachetools, orjson, cryptography, tenacity, ... none of which these three
+# modules import), and pulling those in is what forced a from-source Rust build
+# on Arch. Verified by grepping imports in proxy_defense/proxy_harvester/
+# mcp_proxy_server.
 depends=(
     'python'
     'python-aiohttp'
     'python-aiofiles'
-    'python-cachetools'
-    'python-certifi'
-    'python-cryptography'
-    'python-dateutil'
-    'python-fake-useragent'
     'python-httpx'
-    'python-orjson'
-    'python-pyopenssl'
-    'python-pysocks'
-    'python-requests'
-    'python-tenacity'
-    'python-urllib3'
-    'python-yaml'
 )
-# Required at runtime but not in the official repos; listed here so a missing
-# one is visible rather than a mystery ImportError at first request.
+# The escalation ladder is optional by design: http/1.1 must work without any of
+# these. Note optdepends entries take 'name: description' — an [extra] suffix is
+# rejected by makepkg as an invalid character.
 optdepends=(
-    'python-aiohttp-socks: SOCKS proxy support'
-    'python-expiringdict: TTL cache backend'
-    'python-json-logger: structured logging'
-    'python-httpx[http2]: http/2 escalation'
+    'python-h2: http/2 escalation'
     'python-curl-cffi: JA3/TLS fingerprint escalation'
     'python-websockets: WebSocket escalation'
-    'python-redis: shared cache and rate-limit state'
     'python-playwright: browser escalation (then: playwright install chromium)'
+    'python-redis: shared cache and rate-limit state'
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 # The tarball is produced locally by make-source.sh, so its hash changes with
