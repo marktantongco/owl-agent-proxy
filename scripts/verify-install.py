@@ -128,7 +128,8 @@ class Checks:
 
     def optional_deps(self) -> Tuple[str, str]:
         modules = {"h2": "http/2", "curl_cffi": "ja3", "websockets": "websocket",
-                   "playwright": "browser", "redis": "redis"}
+                   "playwright": "browser", "redis": "redis",
+                   "invisible_playwright": "stealth"}
         available = []
         for module, label in modules.items():
             result = self.run([self.python, "-c", f"import {module}"])
@@ -146,7 +147,7 @@ class Checks:
         # installs and fail for every --full install.
         code = (
             "import sys, importlib.util, proxy_defense as pd\n"
-            "heavy = [m for m in ('playwright', 'redis') if m in sys.modules]\n"
+            "heavy = [m for m in ('playwright', 'redis', 'invisible_playwright') if m in sys.modules]\n"
             "assert not heavy, heavy\n"
             "def spec(name):\n"
             "    try:\n"
