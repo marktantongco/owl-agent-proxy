@@ -20,7 +20,7 @@ import random
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -85,8 +85,8 @@ async def _close_quietly(client) -> None:
     """Close a client without letting an error surface as an unhandled task."""
     try:
         await client.aclose()
-    except Exception:
-        pass
+    except Exception:  # a dead socket cannot be closed; shutdown must not raise
+        logger.debug("client close failed", exc_info=True)
 
 
 def _load_harvester():
@@ -319,7 +319,222 @@ class DomainRateLimiter:
         await self._buckets[domain].acquire(tokens)
 
 
-class ProxyRotator:
+@runtime_checkable
+class PoolBackend(Protocol):
+    """The pool contract ``ResilientClient`` depends on.
+
+    Anything satisfying this can be passed as ``ResilientClient(pool=...)`` —
+    a paid residential provider, a Redis-backed pool, or a test double — without
+    editing the request path. ``ProxyRotator`` is the built-in implementation.
+    """
+
+    proxies: List[ProxyEntry]
+
+    async def get_proxy(
+        self,
+        domain: Optional[str] = None,
+        agent_id: str = "default",
+        rotation_mode: str = "sticky",
+    ) -> Optional[ProxyEntry]: ...
+
+    async def mark_banned(self, proxy: ProxyEntry) -> None: ...
+
+    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None): ...
+
+    def load_cache(self) -> int: ...
+
+    def save_cache(self) -> None: ...
+
+    async def start_upstream(self) -> bool: ...
+
+    async def stop_upstream(self) -> None: ...
+
+    async def session_stats(self) -> Dict[str, Any]: ...
+
+    def source_health(self) -> Dict[str, Any]: ...
+
+    def upstream_stats(self) -> Dict[str, Any]: ...
+
+
+class UpstreamHarvestingMixin:
+    """Upstream harvesting + candidate validation, split out of ProxyRotator.
+
+    The state still lives on the pool (``proxies``, ``_urls``,
+    ``_validation_queue`` …) because selection reads the same data; what moves
+    here is the lifecycle logic, so pool selection and upstream harvesting can
+    be read, tested and replaced independently.
+    """
+
+    async def start_upstream(self) -> bool:
+        """Start harvesting + validation. Returns True when the pool is live."""
+        if not self.use_upstream_harvester:
+            return False
+        if self._harvest_task and not self._harvest_task.done():
+            return True
+        module = _load_harvester()
+        if module is None:
+            logger.warning("upstream harvester requested but proxy_harvester.py is missing")
+            return False
+        try:
+            self._harvester = module.UpstreamHarvester()
+            await self._harvester.__aenter__()
+            self._ensure_affinity()
+            await self._affinity.start()
+            if self.honeypot_check:
+                self._honeypot = module.HoneypotDetector(timeout=self.validator_timeout)
+                established = await self._honeypot.establish_baseline()
+                logger.info(f"honeypot baseline: {'ok' if established else 'unavailable (fail-open)'}")
+            self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
+            self._validation_task = asyncio.create_task(self._validation_loop())
+            self._harvest_task = asyncio.create_task(self._harvest_loop())
+            logger.info(f"upstream harvesting on ({len(self._harvester.sources)} sources)")
+            return True
+        except Exception as exc:
+            logger.warning(f"upstream harvester start failed: {exc}")
+            await self.stop_upstream()
+            return False
+
+    async def stop_upstream(self) -> None:
+        for task in (self._harvest_task, self._validation_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # keep shutting down even if a worker died badly
+                    logger.debug("background task raised during shutdown", exc_info=True)
+        self._harvest_task = None
+        self._validation_task = None
+        for task in list(self._validation_tasks):
+            if not task.done():
+                task.cancel()
+        self._validation_tasks.clear()
+        if self._affinity is not None:
+            await self._affinity.stop()
+        if self._harvester is not None:
+            try:
+                await self._harvester.__aexit__(None, None, None)
+            except Exception:  # the harvester may already be torn down
+                logger.debug("harvester shutdown failed", exc_info=True)
+            self._harvester = None
+        self.save_cache()
+
+    async def _harvest_loop(self) -> None:
+        while True:
+            try:
+                added = await self.harvest_once()
+                if added:
+                    logger.info(f"harvest added {added} candidates "
+                                f"({len(self.proxies)} in pool)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"harvest cycle failed: {exc}")
+            await asyncio.sleep(max(30.0, self.harvest_interval))
+
+    async def harvest_once(self, max_per_source: Optional[int] = None) -> int:
+        """Fetch upstream lists and enqueue new candidates for validation."""
+        if self._harvester is None:
+            return 0
+        found = await self._harvester.harvest(
+            max_per_source=max_per_source or self.max_per_source
+        )
+        added = 0
+        for item in found:
+            url = item["url"]
+            if url in self._urls:
+                continue
+            entry = ProxyEntry(
+                url=url,
+                proxy_type="free",
+                protocol=item.get("protocol", "http"),
+                source=item.get("source", "upstream"),
+                tier=4,
+                healthy=False,
+                validated=False,
+                latency_ms=float(item.get("latency_ms") or 9999.0),
+            )
+            self.proxies.append(entry)
+            self._remember(entry)
+            self._validation_queue.put_nowait(url)
+            added += 1
+        self._harvested += added
+        self._trim()
+        return added
+
+    # ── validation ─────────────────────────────────────────────────────
+    async def _validation_loop(self) -> None:
+        while True:
+            url = await self._validation_queue.get()
+            if self._sem is None:
+                self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
+            task = asyncio.create_task(self._validate_entry(url))
+            self._validation_tasks.add(task)
+            task.add_done_callback(self._validation_tasks.discard)
+
+    async def _validate_entry(self, url: str) -> None:
+        assert self._sem is not None
+        async with self._sem:
+            entry = self._find(url)
+            if entry is None:
+                return
+            module = _load_harvester()
+            if module is None:
+                return
+            try:
+                metrics = await module.validate_proxy(url, timeout=self.validator_timeout)
+            except Exception:
+                metrics = None
+            if not metrics or not metrics.get("ok"):
+                entry.mark_failed()
+                if entry.fail_count >= 3:
+                    self._remove(url)
+                return
+
+            if self._honeypot is not None:
+                trusted, reason = await self._honeypot.check(url)
+                # Only definitive tampering rejects; connectivity noise does not.
+                if not trusted and (reason.startswith("content-mismatch")
+                                    or reason.startswith("injected")):
+                    self._rejected += 1
+                    logger.warning(f"honeypot reject {url}: {reason}")
+                    entry.mark_failed()
+                    self._remove(url)
+                    return
+
+            entry.mark_success(
+                float(metrics.get("tcp_ms") or 0) + float(metrics.get("http_ms") or 0)
+            )
+
+    def _remove(self, url: str) -> None:
+        self.proxies = [p for p in self.proxies if p.url != url]
+        self._urls.discard(url)
+
+    # ── introspection ──────────────────────────────────────────────────
+    async def session_stats(self) -> Dict[str, Any]:
+        if self._affinity is None:
+            return {"active": 0, "ttl_seconds": self.session_ttl, "by_domain": {}}
+        return await self._affinity.stats()
+
+    def source_health(self) -> Dict[str, Any]:
+        if self._harvester is None:
+            return {}
+        return self._harvester.health.snapshot()
+
+    def upstream_stats(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.use_upstream_harvester,
+            "running": bool(self._harvest_task and not self._harvest_task.done()),
+            "harvested_total": self._harvested,
+            "honeypot_rejections": self._rejected,
+            "unvalidated": sum(1 for p in self.proxies if not p.validated),
+            "pending_validation": self._validation_queue.qsize(),
+            "sources": self.source_health(),
+        }
+
+
+class ProxyRotator(UpstreamHarvestingMixin):
     """Tier-sorted proxy pool with optional v7.1 upstream harvesting.
 
     Selection order is tier then latency. When a domain is supplied and
@@ -516,175 +731,6 @@ class ProxyRotator:
             self._affinity = module.SessionAffinityManager(ttl_seconds=self.session_ttl)
         return self._affinity
 
-    async def start_upstream(self) -> bool:
-        """Start harvesting + validation. Returns True when the pool is live."""
-        if not self.use_upstream_harvester:
-            return False
-        if self._harvest_task and not self._harvest_task.done():
-            return True
-        module = _load_harvester()
-        if module is None:
-            logger.warning("upstream harvester requested but proxy_harvester.py is missing")
-            return False
-        try:
-            self._harvester = module.UpstreamHarvester()
-            await self._harvester.__aenter__()
-            self._ensure_affinity()
-            await self._affinity.start()
-            if self.honeypot_check:
-                self._honeypot = module.HoneypotDetector(timeout=self.validator_timeout)
-                established = await self._honeypot.establish_baseline()
-                logger.info(f"honeypot baseline: {'ok' if established else 'unavailable (fail-open)'}")
-            self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
-            self._validation_task = asyncio.create_task(self._validation_loop())
-            self._harvest_task = asyncio.create_task(self._harvest_loop())
-            logger.info(f"upstream harvesting on ({len(self._harvester.sources)} sources)")
-            return True
-        except Exception as exc:
-            logger.warning(f"upstream harvester start failed: {exc}")
-            await self.stop_upstream()
-            return False
-
-    async def stop_upstream(self) -> None:
-        for task in (self._harvest_task, self._validation_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
-        self._harvest_task = None
-        self._validation_task = None
-        for task in list(self._validation_tasks):
-            if not task.done():
-                task.cancel()
-        self._validation_tasks.clear()
-        if self._affinity is not None:
-            await self._affinity.stop()
-        if self._harvester is not None:
-            try:
-                await self._harvester.__aexit__(None, None, None)
-            except Exception:
-                pass
-            self._harvester = None
-        self.save_cache()
-
-    async def _harvest_loop(self) -> None:
-        while True:
-            try:
-                added = await self.harvest_once()
-                if added:
-                    logger.info(f"harvest added {added} candidates "
-                                f"({len(self.proxies)} in pool)")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(f"harvest cycle failed: {exc}")
-            await asyncio.sleep(max(30.0, self.harvest_interval))
-
-    async def harvest_once(self, max_per_source: Optional[int] = None) -> int:
-        """Fetch upstream lists and enqueue new candidates for validation."""
-        if self._harvester is None:
-            return 0
-        found = await self._harvester.harvest(
-            max_per_source=max_per_source or self.max_per_source
-        )
-        added = 0
-        for item in found:
-            url = item["url"]
-            if url in self._urls:
-                continue
-            entry = ProxyEntry(
-                url=url,
-                proxy_type="free",
-                protocol=item.get("protocol", "http"),
-                source=item.get("source", "upstream"),
-                tier=4,
-                healthy=False,
-                validated=False,
-                latency_ms=float(item.get("latency_ms") or 9999.0),
-            )
-            self.proxies.append(entry)
-            self._remember(entry)
-            self._validation_queue.put_nowait(url)
-            added += 1
-        self._harvested += added
-        self._trim()
-        return added
-
-    # ── validation ─────────────────────────────────────────────────────
-    async def _validation_loop(self) -> None:
-        while True:
-            url = await self._validation_queue.get()
-            if self._sem is None:
-                self._sem = asyncio.Semaphore(max(1, self.validator_concurrency))
-            task = asyncio.create_task(self._validate_entry(url))
-            self._validation_tasks.add(task)
-            task.add_done_callback(self._validation_tasks.discard)
-
-    async def _validate_entry(self, url: str) -> None:
-        assert self._sem is not None
-        async with self._sem:
-            entry = self._find(url)
-            if entry is None:
-                return
-            module = _load_harvester()
-            if module is None:
-                return
-            try:
-                metrics = await module.validate_proxy(url, timeout=self.validator_timeout)
-            except Exception:
-                metrics = None
-            if not metrics or not metrics.get("ok"):
-                entry.mark_failed()
-                if entry.fail_count >= 3:
-                    self._remove(url)
-                return
-
-            if self._honeypot is not None:
-                trusted, reason = await self._honeypot.check(url)
-                # Only definitive tampering rejects; connectivity noise does not.
-                if not trusted and (reason.startswith("content-mismatch")
-                                    or reason.startswith("injected")):
-                    self._rejected += 1
-                    logger.warning(f"honeypot reject {url}: {reason}")
-                    entry.mark_failed()
-                    self._remove(url)
-                    return
-
-            entry.mark_success(
-                float(metrics.get("tcp_ms") or 0) + float(metrics.get("http_ms") or 0)
-            )
-
-    def _remove(self, url: str) -> None:
-        self.proxies = [p for p in self.proxies if p.url != url]
-        self._urls.discard(url)
-
-    # ── introspection ──────────────────────────────────────────────────
-    async def session_stats(self) -> Dict[str, Any]:
-        if self._affinity is None:
-            return {"active": 0, "ttl_seconds": self.session_ttl, "by_domain": {}}
-        return await self._affinity.stats()
-
-    def source_health(self) -> Dict[str, Any]:
-        if self._harvester is None:
-            return {}
-        return self._harvester.health.snapshot()
-
-    def upstream_stats(self) -> Dict[str, Any]:
-        return {
-            "enabled": self.use_upstream_harvester,
-            "running": bool(self._harvest_task and not self._harvest_task.done()),
-            "harvested_total": self._harvested,
-            "honeypot_rejections": self._rejected,
-            "unvalidated": sum(1 for p in self.proxies if not p.validated),
-            "pending_validation": self._validation_queue.qsize(),
-            "sources": self.source_health(),
-        }
-
-
 class ResilientClient:
     """Cache → dedupe → rate limit → proxy select → protocol router.
 
@@ -711,6 +757,7 @@ class ResilientClient:
         honeypot_check: Optional[bool] = None,
         max_proxies: Optional[int] = None,
         config_path: Optional[Union[str, Path]] = None,
+        pool: Optional[PoolBackend] = None,
     ):
         config = self._read_config(config_path)
         self.config = config
@@ -738,7 +785,9 @@ class ResilientClient:
         self.harvest_interval = float(pick(harvest_interval, "harvest_interval", DEFAULT_HARVEST_INTERVAL))
         self.honeypot_check = bool(pick(honeypot_check, "honeypot_check", True))
         resolved_max_proxies = int(pick(max_proxies, "max_proxies", DEFAULT_MAX_PROXIES))
-        self.rotator = ProxyRotator(
+        # A pool backend can be injected (paid provider, Redis-backed pool, test
+        # double); ProxyRotator remains the default implementation.
+        self.rotator: PoolBackend = pool if pool is not None else ProxyRotator(
             use_upstream_harvester=self.use_upstream_harvester,
             session_ttl=self.session_ttl,
             harvest_interval=self.harvest_interval,

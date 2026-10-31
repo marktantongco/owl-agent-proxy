@@ -678,9 +678,10 @@ async def validate_proxy(proxy_url: str, timeout: float = 8.0,
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
-            pass
-    except Exception:
+        except Exception:  # the probe result is already recorded; close is best-effort
+            logger.debug("probe writer close failed", exc_info=True)
+    except Exception:  # unreachable host: the metric is the absence of tcp_ms
+        logger.debug("tcp probe failed for %s", proxy_url, exc_info=True)
         return None
 
     try:
