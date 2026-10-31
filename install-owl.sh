@@ -26,6 +26,7 @@
 #   OWL_HOME      install root (default ~/.owl-agent)
 #   OWL_SOURCE    source directory (default: directory containing this script)
 #   PYTHON        interpreter used to build the venv (default python3)
+#   OWL_OS_RELEASE  os-release file for distro detection (default /etc/os-release)
 # ══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -47,7 +48,9 @@ step() { echo -e "\n${BLU}── $* ──${NC}"; }
 die()  { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
 
 usage() {
-  sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block, stopping at the first non-comment line, so
+  # editing the header can never leak code into --help.
+  awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print; next } exit }' "${BASH_SOURCE[0]}"
 }
 
 # ── arguments ────────────────────────────────────────────────────────────────
@@ -93,13 +96,84 @@ if [[ "$MODE" == "rollback" ]]; then
   exit 0
 fi
 
+# ── platform detection ───────────────────────────────────────────────────────
+# Remediation hints must match the host. "apt install python3-venv" is a dead end
+# on Arch, where venv is bundled with `python` and no such package exists.
+DISTRO_ID="unknown"
+DISTRO_PRETTY="unknown"
+OS_RELEASE_FILE="${OWL_OS_RELEASE:-/etc/os-release}"   # overridable so the detection is testable
+if [[ -r "$OS_RELEASE_FILE" ]]; then
+  DISTRO_ID="$(. "$OS_RELEASE_FILE" 2>/dev/null; printf '%s' "${ID:-unknown}")"
+  DISTRO_PRETTY="$(. "$OS_RELEASE_FILE" 2>/dev/null; printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")"
+fi
+
+case "$DISTRO_ID" in
+  arch|manjaro|endeavouros|cachyos|garuda|artix)
+    PKG_MGR="pacman"
+    SYS_PY="/usr/bin/python"
+    PY_PKG_HINT="sudo pacman -S python"
+    VENV_PKG_HINT="venv is bundled with the 'python' package on Arch — no separate package needed" ;;
+  debian|ubuntu|linuxmint|pop|raspbian)
+    PKG_MGR="apt"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo apt install python3"
+    VENV_PKG_HINT="sudo apt install python3-venv" ;;
+  fedora|rhel|centos|rocky|almalinux)
+    PKG_MGR="dnf"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo dnf install python3"
+    VENV_PKG_HINT="venv ships with python3 — reinstall python3" ;;
+  alpine)
+    PKG_MGR="apk"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo apk add python3"
+    VENV_PKG_HINT="venv ships with python3 — reinstall python3" ;;
+  opensuse*|sles|sled)
+    PKG_MGR="zypper"
+    SYS_PY="/usr/bin/python3"
+    PY_PKG_HINT="sudo zypper install python3"
+    VENV_PKG_HINT="sudo zypper install python3-base" ;;
+  *)
+    PKG_MGR="unknown"
+    SYS_PY="python3"
+    PY_PKG_HINT="install Python 3.10+ with your package manager"
+    VENV_PKG_HINT="install your distro's Python venv package" ;;
+esac
+
 # ── preflight ────────────────────────────────────────────────────────────────
 step "Preflight"
-[[ -n "$PY_SYSTEM" ]] || die "python3 not found — install Python 3.10+ first"
+info "Platform: $DISTRO_PRETTY (id=$DISTRO_ID, pkg=$PKG_MGR)"
+if [[ "$DISTRO_ID" == "arch" ]] && [[ -d /usr/share/omarchy || -d "$HOME/.local/share/omarchy" ]]; then
+  info "omArchy detected — Arch + Hyprland"
+fi
+
+[[ -n "$PY_SYSTEM" ]] || die "python3 not found — $PY_PKG_HINT"
 "$PY_SYSTEM" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' \
-  || die "Python ≥ 3.10 required (found $("$PY_SYSTEM" -V 2>&1))"
+  || die "Python ≥ 3.10 required (found $("$PY_SYSTEM" -V 2>&1)) — $PY_PKG_HINT"
 PY_VER="$("$PY_SYSTEM" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 info "Python $PY_VER ($PY_SYSTEM)"
+
+# requirements.txt pins exact versions. Those pins are reproducible on the
+# interpreters the wheels were built for, but a newer interpreter (Arch ships the
+# newest CPython) often has no wheel for them, so pip falls back to building from
+# source — orjson/cryptography need a Rust toolchain at that point. Allow a
+# relaxed-pin retry on a newer interpreter; keep strict pins everywhere else.
+PY_MINOR="${PY_VER#*.}"
+RELAX_FALLBACK=0
+if [[ "$(printf '%s\n' "13" "$PY_MINOR" | sort -V | head -n1)" == "13" ]]; then
+  RELAX_FALLBACK=1
+fi
+
+# A mise / asdf / pyenv shim ties the venv to one interpreter version: switching
+# runtimes later leaves a silently broken venv. omArchy manages runtimes with
+# mise, so this is the common case there, not an edge case.
+case "$PY_SYSTEM" in
+  */mise/*|*/.asdf/*|*/.pyenv/*|*/.rtx/*)
+    warn "Python is managed by mise/asdf/pyenv — the venv is pinned to $PY_VER."
+    warn "To survive a runtime switch, reinstall with a system interpreter:"
+    warn "  PYTHON=$SYS_PY ./install-owl.sh"
+    ;;
+esac
 
 if [[ "$MODE" == "verify" ]]; then
   [[ -x "$VENV/bin/python" ]] || die "no venv at $VENV — install first"
@@ -129,7 +203,7 @@ if [[ -x "$VENV/bin/python" ]]; then
 fi
 if [[ ! -x "$VENV/bin/python" ]]; then
   "$PY_SYSTEM" -m venv --prompt owl-agent "$VENV" \
-    || die "venv creation failed — install python3-venv (Debian/Ubuntu: apt install python3-venv)"
+    || die "venv creation failed — $VENV_PKG_HINT"
   info "created $VENV"
 else
   info "reusing $VENV"
@@ -141,7 +215,30 @@ PY="$VENV/bin/python"
 step "Dependencies"
 "$PY" -m pip install -q --upgrade pip setuptools wheel 2>/dev/null || warn "pip self-upgrade skipped"
 info "installing core requirements"
-if ! "$PY" -m pip install -q -r "$SRC/requirements.txt"; then
+install_requirements() {
+  local reqs="$1" relaxed=0
+  if "$PY" -m pip install -q -r "$reqs"; then
+    return 0
+  fi
+  if [[ "$RELAX_FALLBACK" == "1" ]]; then
+    warn "pinned install failed on Python $PY_VER — retrying with relaxed bounds"
+    warn "(no wheel exists for the pinned versions on this interpreter)"
+    local tmp; tmp="$(mktemp)"
+    sed -E 's/==/>=/g' "$reqs" > "$tmp"
+    if "$PY" -m pip install -q -r "$tmp"; then
+      rm -f "$tmp"
+      relaxed=1
+      INSTALL_RELAXED=1
+      warn "installed with relaxed pins — versions will differ from requirements.txt"
+      "$PY" -m pip list 2>/dev/null | grep -Ei "^(aiohttp|orjson|cryptography|httpx) " || true
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
+  return 1
+}
+
+if ! install_requirements "$SRC/requirements.txt"; then
   die "core dependencies failed — check your network/pip config, then re-run"
 fi
 "$PY" -c "import aiohttp, aiofiles, httpx" || die "core imports failed after install"

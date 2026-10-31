@@ -138,14 +138,32 @@ class Checks:
         return PASS, detail
 
     def lazy_harvester(self) -> Tuple[str, str]:
+        # proxy_defense imports curl_cffi / websockets at module scope to set its
+        # availability flags, so those are expected in sys.modules when the user
+        # installed them. What must stay lazy is the genuinely heavy, rarely used
+        # pair (playwright, redis), and the module must import cleanly either way.
+        # Asserting "curl_cffi absent" made this check pass only for minimal
+        # installs and fail for every --full install.
         code = (
-            "import sys, proxy_defense\n"
-            "heavy = [m for m in ('curl_cffi','playwright','redis','websockets') if m in sys.modules]\n"
+            "import sys, importlib.util, proxy_defense as pd\n"
+            "heavy = [m for m in ('playwright', 'redis') if m in sys.modules]\n"
             "assert not heavy, heavy\n"
+            "def spec(name):\n"
+            "    try:\n"
+            "        return importlib.util.find_spec(name) is not None\n"
+            "    except (ImportError, ValueError):\n"
+            "        return False\n"
+            "for mod, flag in (('curl_cffi', pd.JA3_AVAILABLE),\n"
+            "                  ('websockets', pd.WS_AVAILABLE),\n"
+            "                  ('playwright', pd.PLAYWRIGHT_AVAILABLE)):\n"
+            "    assert spec(mod) == flag, (mod, spec(mod), flag)\n"
+            "assert all(isinstance(v, bool) for v in\n"
+            "           (pd.HTTP2_AVAILABLE, pd.JA3_AVAILABLE, pd.WS_AVAILABLE,\n"
+            "            pd.PLAYWRIGHT_AVAILABLE))\n"
         )
         result = self.run([self.python, "-c", code])
         assert result.returncode == 0, result.stderr.strip().splitlines()[-1:]
-        return PASS, "no heavy imports at module load"
+        return PASS, "optional protocols degrade cleanly, heavy pair still lazy"
 
     def sticky_selection(self) -> Tuple[str, str]:
         import proxy_defense as pd

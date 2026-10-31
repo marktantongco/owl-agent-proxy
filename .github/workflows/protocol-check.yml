@@ -76,3 +76,39 @@ jobs:
         env:
           OWL_HOME: ${{ runner.temp }}/owl-agent
         run: ./install-owl.sh --verify-only --no-live
+
+  arch:
+    name: Arch Linux / omArchy (pacman)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Prepare container (checkout needs git; arch image ships none)
+        run: pacman -Sy --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: System packages + install + verify
+        env:
+          OWL_HOME: /tmp/owl-agent
+        run: |
+          chmod +x scripts/install-arch.sh install-owl.sh
+          set +e
+          ./scripts/install-arch.sh --ci --minimal --no-live 2>&1 | tee arch-install.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::install-arch.sh exited $status"
+            # Action logs are not always reachable (sandboxed reviewers, restricted
+            # egress). Annotations are, so surface the tail of the output there.
+            tail -n 30 arch-install.log | while IFS= read -r line; do
+              [ -n "$line" ] && printf '::error::%s\n' "$line"
+            done
+          fi
+          exit "$status"
+      - name: Re-run installer (idempotency)
+        env:
+          OWL_HOME: /tmp/owl-agent
+          OWL_SKIP_VERIFY: "1"
+        run: ./scripts/install-arch.sh --ci --minimal --no-live
+      - name: Verify existing install
+        env:
+          OWL_HOME: /tmp/owl-agent
+        run: ./install-owl.sh --verify-only --no-live

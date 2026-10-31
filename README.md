@@ -159,6 +159,39 @@ new config keys without touching your values.
 ~/.owl-agent/run.sh mcp-selftest           # MCP protocol check
 ```
 
+### Arch Linux / omArchy
+
+omArchy is Arch Linux + Hyprland, so it uses the same path as any Arch install.
+The naive `install-owl.sh` works, but Arch needs two things Ubuntu does not:
+
+- **venv is mandatory, not optional.** Arch marks system Python as
+  `EXTERNALLY-MANAGED` (PEP 668), so `pip install` outside a venv is refused.
+- **The remediation hint must be right.** There is no `python3-venv` or
+  `python3-dev` package on Arch — venv and headers ship inside `python`.
+
+`install-owl.sh` now detects the distro from `/etc/os-release` and prints
+`Platform: Arch Linux (id=arch, pkg=pacman)` plus Arch-correct commands. For a
+full install including system packages:
+
+```bash
+./scripts/install-arch.sh              # sudo: pacman -Syu + packages + install + verify
+./scripts/install-arch.sh --minimal    # core http/1.1 only
+./scripts/install-arch.sh --user       # skip pacman (no root)
+./scripts/install-arch.sh --verify     # verify an existing install
+```
+
+Every package name is checked against the pacman database first and **skipped
+with a warning** if it no longer exists — `pacman -S` aborts the whole
+transaction on one unknown name, and names drift on a rolling release.
+
+> **omArchy + mise:** omArchy manages runtimes with mise. A mise shim on `PATH`
+> ties the venv to one interpreter version, and switching versions afterwards
+> leaves a silently broken venv. The installer warns when it detects this; pin a
+> system interpreter with `PYTHON=/usr/bin/python ./install-owl.sh`.
+
+Verified on every PR in a real `archlinux:latest` container (the `arch` CI job),
+not just claimed in a doc.
+
 ### Manual (library only)
 
 ```bash
@@ -588,6 +621,7 @@ demand. Four jobs:
 | `skills` | Every `SKILL.md` is well-formed and discoverable by the `skills` CLI |
 | `tests` | `pytest` on Python 3.10, 3.11 and 3.12, plus the MCP protocol selftest |
 | `installer` | A fresh install into a throwaway `OWL_HOME`, an idempotent re-run, then `--verify-only --no-live` |
+| `arch` | `scripts/install-arch.sh` end-to-end inside `archlinux:latest` — pacman packages, install, idempotent re-run, then verification |
 
 Run the same checks by hand:
 
@@ -666,6 +700,7 @@ owl-agent-proxy/
 │   └── usage.py                  # Usage examples for all protocols
 ├── scripts/
 │   ├── install-ubuntu.sh         # Ubuntu system install (apt + phases)
+│   ├── install-arch.sh           # Arch / omArchy system install (pacman + install-owl.sh)
 │   └── verify-install.py         # V1–V20 install verification
 ├── skills/
 │   ├── development/
