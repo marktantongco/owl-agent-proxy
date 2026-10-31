@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "owl-agent-proxy"
+version = "7.1.0"
+description = "Layered HTTP defense stack: cache, dedupe, per-domain rate limit, sticky proxy rotation, honeypot detection and a stdio MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "marktantongco" }]
+keywords = ["proxy", "http", "mcp", "agent", "scraping", "rotation"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Proxy Servers",
+]
+# Only the modules that are imported unconditionally. The optional protocol
+# layers are extras below; http/1.1 works with nothing else installed.
+dependencies = [
+    "aiohttp>=3.11",
+    "aiofiles>=24.1",
+    "httpx>=0.27,<0.29",
+]
+
+[project.optional-dependencies]
+# The escalation ladder is optional by design: http/1.1 always works.
+http2 = ["httpx[http2]>=0.28"]
+ja3 = ["curl_cffi>=0.7"]
+websocket = ["websockets>=15"]
+redis = ["redis>=5"]
+browser = ["playwright>=1.52"]
+all = ["httpx[http2]>=0.28", "curl_cffi>=0.7", "websockets>=15", "redis>=5"]
+
+[project.urls]
+Homepage = "https://github.com/marktantongco/owl-agent-proxy"
+Documentation = "https://github.com/marktantongco/owl-agent-proxy/blob/main/docs/MCP_INTEGRATION.md"
+Issues = "https://github.com/marktantongco/owl-agent-proxy/issues"
+
+[project.scripts]
+owl-proxy = "proxy_defense:main"
+owl-proxy-mcp = "mcp_proxy_server:main"
+
+[tool.setuptools]
+# Three top-level modules rather than a package: they are imported by name
+# (proxy_defense, proxy_harvester, mcp_proxy_server) and the MCP server resolves
+# the backend lazily from those names, so the layout is load-bearing.
+py-modules = ["proxy_defense", "proxy_harvester", "mcp_proxy_server"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.template.json"]
