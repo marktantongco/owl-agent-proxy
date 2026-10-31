@@ -125,6 +125,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build source tarball from this commit
         run: |
+          # Container jobs run as root on a runner-owned workspace, so git
+          # refuses the checkout as "dubious ownership" until it is trusted.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           set +e
           bash packaging/make-source.sh 2>&1 | tee mksrc.log
           status=${PIPESTATUS[0]}
@@ -155,7 +158,9 @@ jobs:
         run: |
           useradd -m builder
           chown -R builder:builder .
-          su -s /bin/bash builder -c 'cd packaging && makepkg -f --nodeps'
+          # Log in as the builder: makepkg writes to $HOME, and inheriting
+          # root's HOME leaves it unable to read its own cache/config.
+          su -l -s /bin/bash builder -c "cd $PWD/packaging && makepkg -f --nodeps"
       - name: Assert the packaged payload
         run: |
           pkg=$(ls packaging/*.pkg.tar.zst)
