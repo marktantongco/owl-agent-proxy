@@ -17,6 +17,13 @@ config/proxy_pool.json
 logs/*.log
 *.pyc
 
+# Test/coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+
 # IDE
 .vscode/
 .idea/
