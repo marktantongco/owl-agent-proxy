@@ -17,6 +17,13 @@ config/proxy_pool.json
 logs/*.log
 *.pyc
 
+# Packaging build outputs
+dist/
+packaging/*.pkg.tar.*
+packaging/owl-agent-proxy-*.tar.gz
+packaging/src/
+packaging/pkg/
+
 # Test/coverage artifacts
 .coverage
 .coverage.*
