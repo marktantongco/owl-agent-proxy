@@ -156,11 +156,21 @@ jobs:
           echo "unresolved dependency names: $missing (informational)"
       - name: Build the package (makepkg refuses to run as root)
         run: |
+          workspace="$PWD"
           useradd -m builder
           chown -R builder:builder .
           # Log in as the builder: makepkg writes to $HOME, and inheriting
           # root's HOME leaves it unable to read its own cache/config.
-          su -l -s /bin/bash builder -c "cd $PWD/packaging && makepkg -f --nodeps"
+          set +e
+          su -l -s /bin/bash builder -c "cd '$workspace/packaging' && makepkg -f --nodeps" 2>&1 | tee makepkg.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            tail -n 25 makepkg.log | while IFS= read -r line; do
+              [ -n "$line" ] && printf '::error::%s\n' "$line"
+            done
+          fi
+          exit "$status"
       - name: Assert the packaged payload
         run: |
           pkg=$(ls packaging/*.pkg.tar.zst)
