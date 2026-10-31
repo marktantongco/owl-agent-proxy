@@ -112,3 +112,60 @@ jobs:
         env:
           OWL_HOME: /tmp/owl-agent
         run: ./install-owl.sh --verify-only --no-live
+
+  pkgbuild:
+    name: PKGBUILD (Arch package)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tooling
+        run: |
+          pacman -Sy --noconfirm --needed git base-devel python \
+            python-build python-installer python-wheel python-setuptools
+      - uses: actions/checkout@v4
+      - name: Build source tarball from this commit
+        run: bash packaging/make-source.sh
+      - name: Check dependency names resolve
+        run: |
+          # depends() names drift across rolling releases. Report a rename
+          # rather than shipping a package that cannot be installed.
+          deps=$(sed -n '/^depends=(/,/^)/p' packaging/PKGBUILD \
+                 | grep -o "'[^']*'" | tr -d "'" | grep -v '\[' || true)
+          missing=0
+          for d in $deps; do
+            if pacman -Si "$d" >/dev/null 2>&1; then
+              echo "ok: $d"
+            else
+              echo "::warning title=dependency not in repos::$d"
+              missing=$((missing + 1))
+            fi
+          done
+          echo "unresolved dependency names: $missing (informational)"
+      - name: Build the package (makepkg refuses to run as root)
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          su -s /bin/bash builder -c 'cd packaging && makepkg -f --nodeps'
+      - name: Assert the packaged payload
+        run: |
+          pkg=$(ls packaging/*.pkg.tar.zst)
+          pacman -Qlp "$pkg" > contents.txt
+          cat contents.txt
+          fail=0
+          for path in usr/bin/owl-proxy usr/bin/owl-proxy-mcp \
+                      proxy_defense.py proxy_harvester.py mcp_proxy_server.py \
+                      usr/share/licenses/owl-agent-proxy/LICENSE; do
+            if grep -q "${path}$" contents.txt; then
+              echo "present: $path"
+            else
+              echo "::error title=missing from package::$path"
+              fail=1
+            fi
+          done
+          # A venv-contaminated build would land under the venv prefix instead
+          # of /usr/lib/pythonX.Y/site-packages.
+          if grep -q '\.venv/' contents.txt; then
+            echo "::error title=venv leak::package contains paths from a virtualenv"
+            fail=1
+          fi
+          exit $fail

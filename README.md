@@ -192,6 +192,31 @@ transaction on one unknown name, and names drift on a rolling release.
 Verified on every PR in a real `archlinux:latest` container (the `arch` CI job),
 not just claimed in a doc.
 
+### Arch package (PKGBUILD)
+
+`packaging/PKGBUILD` builds a real pacman package, so pacman owns install,
+upgrade and removal, and the dependency list is declared instead of drifting
+with a shell script on a rolling release.
+
+```bash
+bash packaging/make-source.sh      # tarball from an exact commit
+cd packaging && makepkg -si        # builds and installs
+```
+
+It installs `owl-proxy` and `owl-proxy-mcp` on `PATH`, the three modules into
+site-packages, docs under `/usr/share/doc/owl-agent-proxy`, and the pool
+template under `/usr/share/owl-agent-proxy`.
+
+The package is built and its payload asserted in CI on every PR
+(the `pkgbuild` job, inside `archlinux:latest`). Notes:
+
+- **Build outside a virtualenv.** `python -m installer` resolves paths through
+  the interpreter it runs under, so a venv-active shell produces a package that
+  installs under the venv prefix. The PKGBUILD refuses to build in that case.
+- `make-source.sh` archives a **committed** tree — commit before packaging.
+- The optional protocol layers (`http2`, `ja3`, `websocket`, `browser`) are
+  `optdepends`, not hard dependencies: http/1.1 must keep working without them.
+
 ### Manual (library only)
 
 ```bash
@@ -613,7 +638,7 @@ bash .github/scripts/ci-check.sh
 
 [`.github/workflows/protocol-check.yml`](.github/workflows/protocol-check.yml)
 runs on every pull request to `main`/`develop`, on pushes to `main`, and on
-demand. Four jobs:
+demand. Six jobs:
 
 | Job | What it proves |
 |-----|----------------|
@@ -622,6 +647,7 @@ demand. Four jobs:
 | `tests` | `pytest` on Python 3.10, 3.11 and 3.12, plus the MCP protocol selftest |
 | `installer` | A fresh install into a throwaway `OWL_HOME`, an idempotent re-run, then `--verify-only --no-live` |
 | `arch` | `scripts/install-arch.sh` end-to-end inside `archlinux:latest` — pacman packages, install, idempotent re-run, then verification |
+| `pkgbuild` | Builds `packaging/PKGBUILD` with `makepkg` in `archlinux:latest` and asserts the packaged payload |
 
 Run the same checks by hand:
 
@@ -679,6 +705,11 @@ owl-agent-proxy/
 ├── requirements.txt              # Pinned core dependencies
 ├── requirements-dev.txt          # pytest + pytest-asyncio
 ├── pytest.ini                    # Test config (async mode, testpaths)
+├── pyproject.toml                # Build metadata + console scripts
+├── LICENSE                       # MIT
+├── packaging/
+│   ├── PKGBUILD                  # Arch / omArchy package
+│   └── make-source.sh            # tarball from an exact commit
 ├── .gitignore                    # Git ignore rules
 ├── README.md                     # This file
 ├── worklog.md                    # Session worklog template
