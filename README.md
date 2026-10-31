@@ -349,6 +349,11 @@ python -c "from playwright.async_api import async_playwright; print('✅ Browser
 **Usage:**
 ```python
 resp = await client.request("GET", "https://js-heavy-site.com", protocol="browser")
+
+# Last resort: stealth Firefox, fingerprint set inside the engine.
+# Optional extra, Python 3.11+, one-time `invisible-playwright fetch`.
+resp = await client.request("GET", "https://js-heavy-site.com",
+                            protocol="stealth", timezone="Asia/Manila")
 ```
 
 ---
@@ -615,7 +620,7 @@ The CI/CD script enforces two rules before code can be merged:
 
 ### Check 1: Protocol Escalation Justification
 
-Scans for `protocol="ja3"`, `protocol="browser"`, `protocol="http/2"`, `protocol="websocket"` and requires ≥3/4 justification markers:
+Scans for `protocol="ja3"`, `protocol="browser"`, `protocol="stealth"`, `protocol="http/2"`, `protocol="websocket"` and requires ≥3/4 justification markers:
 
 | Marker | Keyword |
 |--------|---------|
@@ -726,6 +731,7 @@ owl-agent-proxy/
 │   ├── MCP_INTEGRATION.md        # Per-host MCP wiring + tool reference
 │   ├── V7_UPSTREAM.md            # Harvesting, honeypot, sticky sessions, runbook
 │   ├── PROTOCOL_ESCALATION_GUIDE.md  # When and how to escalate protocols
+│   ├── STEALTH_BROWSER.md        # Stealth rung (optional extra, Python 3.11+)
 │   └── LAYERED_FALLBACK.md           # Fallback architecture and resilience
 ├── examples/
 │   └── usage.py                  # Usage examples for all protocols
@@ -783,6 +789,7 @@ Target accessible with http/1.1?
 # - Browser latency: 1500ms vs http/1.1: 150ms (10x)
 # - Tested on 2026-05-16, confirmed working
 protocol="browser"  # APPROVED: Akamai requires full browser
+protocol="stealth"  # last resort — see docs/STEALTH_BROWSER.md
 ```
 
 ---

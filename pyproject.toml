@@ -37,6 +37,11 @@ ja3 = ["curl_cffi>=0.7"]
 websocket = ["websockets>=15"]
 redis = ["redis>=5"]
 browser = ["playwright>=1.52"]
+# Stealth rung: a C++-patched Firefox with the fingerprint set inside the engine.
+# Requires Python >= 3.11 (the library's floor, above this project's 3.10) and a
+# one-time `invisible-playwright fetch` of a ~260 MB sealed browser (~550 MB
+# unpacked). Kept out of `all` for both reasons.
+stealth = ["invisible-playwright>=0.44"]
 all = ["httpx[http2]>=0.28", "curl_cffi>=0.7", "websockets>=15", "redis>=5"]
 
 [project.urls]
