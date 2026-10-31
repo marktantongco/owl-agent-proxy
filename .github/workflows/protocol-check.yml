@@ -120,11 +120,21 @@ jobs:
     steps:
       - name: Install build tooling
         run: |
-          pacman -Sy --noconfirm --needed git base-devel python \
+          pacman -Sy --noconfirm --needed git gzip base-devel python \
             python-build python-installer python-wheel python-setuptools
       - uses: actions/checkout@v4
       - name: Build source tarball from this commit
-        run: bash packaging/make-source.sh
+        run: |
+          set +e
+          bash packaging/make-source.sh 2>&1 | tee mksrc.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            tail -n 20 mksrc.log | while IFS= read -r line; do
+              [ -n "$line" ] && printf '::error::%s\n' "$line"
+            done
+          fi
+          exit "$status"
       - name: Check dependency names resolve
         run: |
           # depends() names drift across rolling releases. Report a rename

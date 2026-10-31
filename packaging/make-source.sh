@@ -19,6 +19,15 @@ if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
     echo "warning: working tree is dirty; the tarball will contain $ref only" >&2
 fi
 
+# `git archive --format=tar.gz` shells out to gzip. Minimal containers (the
+# archlinux image, some CI runners) do not ship it, and the failure surfaces as
+# a bare "exit 128" from git rather than anything actionable.
+if ! command -v gzip >/dev/null 2>&1; then
+    echo "error: gzip not found — required by 'git archive --format=tar.gz'" >&2
+    echo "       install it (Arch: pacman -S gzip; Debian: apt install gzip)" >&2
+    exit 1
+fi
+
 out="$here/owl-agent-proxy-$pkgver.tar.gz"
 # --prefix is mandatory: makepkg strips exactly one leading directory.
 git -C "$root" archive --format=tar.gz \
