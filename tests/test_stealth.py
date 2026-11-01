@@ -149,6 +149,9 @@ async def test_router_refuses_to_downgrade_silently(monkeypatch):
     """Requesting stealth must not quietly return an http/1.1 response."""
     monkeypatch.setattr(pd, "_load_stealth", lambda: None)
     async with _client() as client:
+        # APPROVED: asserts the escalation contract at the anti-bot rung — asking
+        # for stealth must raise, not silently hand back the http/1.1 baseline
+        # labelled "stealth". Covered by the protocol tests; decides nothing new.
         with pytest.raises(pd.ProtocolUnavailable):
             await client.request("GET", "https://example.com", protocol="stealth")
 

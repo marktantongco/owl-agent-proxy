@@ -707,7 +707,7 @@ owl-agent-proxy/
 ├── proxy_defense.py              # Defense stack: cache, dedupe, rate limit, pool, protocols
 ├── proxy_harvester.py            # Upstream harvest, honeypot detector, session affinity
 ├── mcp_proxy_server.py           # MCP server (stdlib stdio JSON-RPC, 4 tools)
-├── requirements.txt              # Pinned core dependencies
+├── requirements.txt              # Core deps only (aiohttp, aiofiles, httpx)
 ├── requirements-dev.txt          # pytest + pytest-asyncio
 ├── pytest.ini                    # Test config (async mode, testpaths)
 ├── pyproject.toml                # Build metadata + console scripts
@@ -738,6 +738,7 @@ owl-agent-proxy/
 ├── scripts/
 │   ├── install-ubuntu.sh         # Ubuntu system install (apt + phases)
 │   ├── install-arch.sh           # Arch / omArchy system install (pacman + install-owl.sh)
+│   ├── smoke-stealth.py          # Live stealth-rung check (needs real networking)
 │   └── verify-install.py         # V1–V20 install verification
 ├── skills/
 │   ├── development/

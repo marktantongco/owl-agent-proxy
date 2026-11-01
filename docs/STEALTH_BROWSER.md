@@ -113,8 +113,18 @@ fail-fast path.
 
 **Not verified: a real browser launch.** The sealed binary downloads from
 `release-assets.githubusercontent.com`, which the development sandbox cannot
-reach. The first real confirmation will be a manual run on a machine with normal
-egress.
+reach (the release *index* on `api.github.com` resolves; the asset host does not).
+
+To close that gap on a machine with normal networking, one command:
+
+```bash
+python scripts/smoke-stealth.py --timezone Asia/Manila
+```
+
+It checks the install, fetches the engine if needed, drives the stack's own
+`_request_stealth` against `example.com`, and asserts the returned document is
+real. Exit `0` verified, `1` failed, `2` not installed. Point it at another
+target with `--url` — but only one you are permitted to automate.
 
 ---
 
