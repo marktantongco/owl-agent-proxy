@@ -17,6 +17,7 @@ import hashlib
 import json
 import time
 import random
+import importlib.util
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -56,6 +57,46 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
+
+
+def _module_installed(name: str) -> bool:
+    """True when a module is importable, without importing it."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# invisible-playwright ships a C++-patched Firefox: ~260 MB to download, ~550 MB
+# unpacked. Importing it at module load would put that on every CLI invocation,
+# so availability is answered by find_spec and the import happens on first use.
+STEALTH_INSTALLED = _module_installed("invisible_playwright")
+
+class ProtocolUnavailable(RuntimeError):
+    """A requested protocol cannot run on this machine: missing library or binary.
+
+    Deliberately distinct from a transient network failure. Retrying cannot fix a
+    missing dependency, and blaming the proxy for it would ban a healthy one, so
+    the retry loop re-raises this immediately.
+    """
+
+
+STEALTH_INSTALL_HINT = (
+    "pip install invisible-playwright && invisible-playwright fetch "
+    "(Python >= 3.11; downloads a ~260 MB sealed Firefox, ~550 MB unpacked)"
+)
+
+
+def _load_stealth():
+    """Import the stealth browser lazily. Returns the async class, or None."""
+    global STEALTH_INSTALLED
+    try:
+        from invisible_playwright.async_api import InvisiblePlaywright
+        STEALTH_INSTALLED = True
+        return InvisiblePlaywright
+    except ImportError:
+        STEALTH_INSTALLED = False
+        return None
 
 CACHE_DIR = Path.home() / ".owl-agent" / "cache" / "http"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -903,6 +944,10 @@ class ResilientClient:
                     response = await self._request_websocket(url, proxy_url, **kwargs)
                 elif protocol == "browser" and PLAYWRIGHT_AVAILABLE:
                     response = await self._request_browser(url, proxy_url, **kwargs)
+                elif protocol == "stealth":
+                    # Not gated on availability on purpose: falling through to
+                    # http/1.1 would label an ordinary request "stealth".
+                    response = await self._request_stealth(url, proxy_url, **kwargs)
                 else:
                     response = await self._request_http1(method, url, params, headers, proxy_url, **kwargs)
 
@@ -924,6 +969,10 @@ class ResilientClient:
                         continue
 
                 return response
+            except ProtocolUnavailable:
+                # Configuration, not transience: no backoff, and the proxy is
+                # innocent, so it must not be marked banned.
+                raise
             except Exception as e:
                 if proxy:
                     await self.rotator.mark_banned(proxy)
@@ -993,6 +1042,58 @@ class ResilientClient:
                 await context.close()
                 await browser.close()
 
+    async def _request_stealth(self, url: str, proxy_url: Optional[str], **kwargs):
+        """Fetch through invisible-playwright's patched Firefox.
+
+        APPROVED: stealth browser rung — baseline is http/1.1 (and then ja3); this
+        is reached only after cloudflare/akamai/datadome challenges; verified
+        against the project's own protocol tests; latency is browser startup bound.
+        """
+        stealth_cls = _load_stealth()
+        if stealth_cls is None:
+            raise ProtocolUnavailable(
+                f"stealth protocol requested but invisible-playwright is not installed — "
+                f"{STEALTH_INSTALL_HINT}"
+            )
+
+        timeout = float(kwargs.get("timeout") or 30.0)
+        proxy_cfg = {"server": proxy_url} if proxy_url else None
+
+        launch: Dict[str, Any] = {"headless": True, "proxy": proxy_cfg}
+        # With no timezone pinned, the engine discovers the egress IP by calling
+        # public checkip endpoints *through the proxy* before it can start. That
+        # costs a round trip, fails if the proxy cannot reach them, and is the
+        # first thing to break behind a TLS-inspecting network. A caller who knows
+        # the target's region should pin it.
+        if kwargs.get("timezone"):
+            launch["timezone"] = str(kwargs["timezone"])
+        if kwargs.get("locale"):
+            launch["locale"] = str(kwargs["locale"])
+        if kwargs.get("seed") is not None:
+            launch["seed"] = int(kwargs["seed"])
+        if kwargs.get("humanize") is not None:
+            launch["humanize"] = kwargs["humanize"]
+
+        # The context manager owns the browser/context lifecycle and tears both
+        # down on exit, so only the page is closed here.
+        async with stealth_cls(**launch) as browser:
+            page = await browser.new_page()
+            try:
+                await page.goto(url, wait_until="domcontentloaded",
+                                timeout=int(timeout * 1000))
+                content = await page.content()
+                return CachedResponse(
+                    status=200,
+                    content=content.encode("utf-8"),
+                    headers={"Content-Type": "text/html"},
+                    timestamp=0, ttl=0,
+                    # Label only: the escalation decision is at the router, where
+                    # http/1.1 is the baseline and this follows an anti-bot
+                    # challenge; the behaviour is tested. Not a second decision.
+                    protocol="stealth")
+            finally:
+                await page.close()
+
     async def get_stats(self) -> Dict[str, Any]:
         total = len(self.rotator.proxies)
         healthy = sum(1 for p in self.rotator.proxies if p.healthy and not p.is_banned())
@@ -1013,7 +1114,8 @@ class ResilientClient:
                 "http/2": HTTP2_AVAILABLE,
                 "ja3": JA3_AVAILABLE,
                 "websocket": WS_AVAILABLE,
-                "browser": PLAYWRIGHT_AVAILABLE
+                "browser": PLAYWRIGHT_AVAILABLE,
+                "stealth": STEALTH_INSTALLED
             },
             # v7.1
             "version": "7.1",
@@ -1060,7 +1162,8 @@ async def _cli(argv: List[str]) -> int:
     p_fetch = sub.add_parser("fetch", help="fetch a URL through the stack")
     p_fetch.add_argument("url")
     p_fetch.add_argument("--protocol", default=None,
-                         choices=["http/1.1", "http/2", "ja3", "websocket", "browser"])
+                         choices=["http/1.1", "http/2", "ja3", "websocket", "browser",
+                                  "stealth"])
     p_fetch.add_argument("--agent-id", default="default")
     p_fetch.add_argument("--rotation-mode", default="sticky", choices=list(ROTATION_MODES))
     p_fetch.add_argument("--json", action="store_true")

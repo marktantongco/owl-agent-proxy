@@ -18,7 +18,10 @@ GREP_EXCLUDES=(--exclude-dir=.git --exclude-dir=venv --exclude-dir=.venv
 check_protocol_escalation() {
     echo "CHECK 1: Protocol Escalation Justification"
     local files
-    files=$(grep -rn "${GREP_EXCLUDES[@]}" 'protocol\s*=\s*["'"'"']\(ja3\|browser\|http/2\|websocket\)["'"'"']' --include="*.py" --include="*.js" --include="*.ts" . 2>/dev/null || true)
+    # No file is exempt: an escalation hidden in a test is still an escalation.
+    # A test that must name a protocol carries the same justification a
+    # production call site would.
+    files=$(grep -rn "${GREP_EXCLUDES[@]}" 'protocol\s*=\s*["'"'"']\(ja3\|browser\|stealth\|http/2\|websocket\)["'"'"']' --include="*.py" --include="*.js" --include="*.ts" . 2>/dev/null || true)
 
     if [ -z "$files" ]; then
         log_ok "No protocol escalation found"
