@@ -98,6 +98,40 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["proxy_url"],
         },
     },
+    {
+        "name": "memory_set",
+        "description": "Store a key-value entry with optional TTL (seconds). Backed by SQLite + FTS5 for full-text search.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "memory key"},
+                "value": {"type": "string", "description": "memory value (JSON-serializable)"},
+                "ttl_seconds": {"type": "integer", "description": "optional TTL in seconds", "default": 86400},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    {
+        "name": "memory_get",
+        "description": "Retrieve a key-value entry by key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "memory key"}},
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "memory_search",
+        "description": "Full-text search over stored memory values using FTS5.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "FTS5 query string"},
+                "limit": {"type": "integer", "description": "max results", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {tool["name"] for tool in TOOLS}
@@ -298,6 +332,98 @@ class ProxyBackend:
         return {"valid": bool(metrics.get("ok")), "trusted": trusted, "reason": reason, **metrics}
 
 
+# ── v7.2 optional memory backend ───────────────────────────────────────────
+# SQLite + FTS5 (stdlib). Reads config.json `mcp_memory` section. When enabled,
+# stores session bindings and arbitrary key/value entries persistently so they
+# survive across OWL restarts.
+class MemoryBackend:
+    def __init__(self, enabled: bool = False, db_path: Optional[Path] = None,
+                 ttl_seconds: int = 86400):
+        self.enabled = enabled
+        self.ttl_seconds = ttl_seconds
+        self._db: Optional[Any] = None
+        self._db_path = db_path or (Path.home() / ".owl-agent" / "cache" / "memory.db")
+
+    def _connect(self) -> Any:
+        import sqlite3
+        if self._db is None:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = sqlite3.connect(str(self._db_path))
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS memory ("
+                "  key TEXT PRIMARY KEY,"
+                "  value TEXT NOT NULL,"
+                "  expires_at REAL NOT NULL"
+                ")"
+            )
+            self._db.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
+                "USING fts5(key, value, content=memory, content_rowid=rowid)"
+            )
+            self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN "
+                "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
+            )
+            self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN "
+                "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); END"
+            )
+            self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN "
+                "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); "
+                "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
+            )
+            self._db.commit()
+        return self._db
+
+    def set(self, key: str, value: str, ttl_seconds: Optional[int] = None) -> None:
+        if not self.enabled:
+            return
+        db = self._connect()
+        ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
+        db.execute(
+            "INSERT OR REPLACE INTO memory(key, value, expires_at) VALUES (?, ?, ?)",
+            (key, value, time.time() + max(1, int(ttl))),
+        )
+        db.commit()
+
+    def get(self, key: str) -> Optional[str]:
+        if not self.enabled:
+            return None
+        db = self._connect()
+        row = db.execute(
+            "SELECT value FROM memory WHERE key = ? AND expires_at > ?",
+            (key, time.time()),
+        ).fetchone()
+        return row[0] if row else None
+
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+        # Escape FTS5 special characters by wrapping each whitespace-delimited
+        # term in double quotes (phrase match). Hyphens, plus signs, etc. are
+        # treated literally inside quotes.
+        fts_query = " ".join('"' + term.strip('"') + '"' for term in query.split() if term.strip())
+        if not fts_query:
+            return []
+        db = self._connect()
+        rows = db.execute(
+            "SELECT m.key, m.value FROM memory m "
+            "WHERE m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?) "
+            "AND m.expires_at > ? LIMIT ?",
+            (fts_query, time.time(), max(1, min(limit, 50))),
+        ).fetchall()
+        return [{"key": r[0], "value": r[1]} for r in rows]
+
+    def sweep_expired(self) -> int:
+        if not self.enabled:
+            return 0
+        db = self._connect()
+        cur = db.execute("DELETE FROM memory WHERE expires_at <= ?", (time.time(),))
+        db.commit()
+        return cur.rowcount
+
+
 _OWL_HOME = str(Path(os.environ.get("OWL_AGENT_HOME", Path.home() / ".owl-agent")))
 if Path(__file__).resolve().parent.as_posix() != _OWL_HOME:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -324,6 +450,31 @@ class OwlMcpServer:
         self._out = out or _STDOUT
         self.initialized = False
         self.should_exit = False
+
+        # v7.2: optional memory backend
+        self.memory: Optional[MemoryBackend] = None
+        self._load_memory_config()
+
+    def _load_memory_config(self) -> None:
+        """Read config.json `mcp_memory` section and initialize MemoryBackend."""
+        config_path = Path(_OWL_HOME) / "config" / "config.json"
+        if not config_path.exists():
+            return
+        try:
+            import json
+            config = json.loads(config_path.read_text())
+        except Exception:
+            return
+        mem_cfg = config.get("mcp_memory", {})
+        if not mem_cfg or not mem_cfg.get("enabled"):
+            return
+        db_path = Path.home() / ".owl-agent" / "cache" / "memory.db"
+        self.memory = MemoryBackend(
+            enabled=True,
+            db_path=db_path,
+            ttl_seconds=int(mem_cfg.get("session_to_key_mapping", {}).get("ttl_seconds", 86400)),
+        )
+        logger.info("memory backend enabled (%s)", db_path)
 
     # ── output ──
     def write(self, message: Dict[str, Any]) -> None:
@@ -451,6 +602,33 @@ class OwlMcpServer:
             if not proxy_url:
                 return {"error": "proxy_url required"}
             return await self.backend.validate(proxy_url)
+        if name == "memory_set":
+            if self.memory is None:
+                return {"error": "memory backend not enabled"}
+            key = str(args.get("key") or "").strip()
+            value = str(args.get("value") or "")
+            if not key:
+                return {"error": "key required"}
+            ttl = args.get("ttl_seconds")
+            self.memory.set(key, value, ttl_seconds=ttl)
+            return {"ok": True, "key": key}
+        if name == "memory_get":
+            if self.memory is None:
+                return {"error": "memory backend not enabled"}
+            key = str(args.get("key") or "").strip()
+            if not key:
+                return {"error": "key required"}
+            value = self.memory.get(key)
+            return {"ok": value is not None, "key": key, "value": value}
+        if name == "memory_search":
+            if self.memory is None:
+                return {"error": "memory backend not enabled"}
+            query = str(args.get("query") or "").strip()
+            limit = int(args.get("limit") or 10)
+            if not query:
+                return {"error": "query required"}
+            results = self.memory.search(query, limit=limit)
+            return {"ok": True, "results": results, "count": len(results)}
         raise ValueError(f"unknown tool: {name}")
 
     # ── main loop ──
