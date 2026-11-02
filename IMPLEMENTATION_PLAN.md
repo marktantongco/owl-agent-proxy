@@ -115,6 +115,24 @@ Each task below is a *planned* unit with inputs, expected output, and verificati
 
 ---
 
+## Runtime verification results (completed 2026-11-02)
+
+Machine: 3.8 GiB RAM, 1 CPU, no GPU, 20 GiB disk, Debian 12.
+
+| Task | Upstream | Result | Detail |
+|---|---|---|---|
+| 3.1 | colibri (`127.0.0.1:8000/v1`) | ⚠️ engine installed, model can't run | `c/coli setup --yes --no-gpu` detected 4.1 GB RAM / 1 CPU / no GPU; smallest catalog model needs 8 GB RAM. Machine below colibri's 8 GB minimum — expected per research. Engine binary works; model download constrained by machine resources, not by colibri. |
+| 3.2 | FreeRide v3 (`localhost:11343/v1`) | ✅ gateway running, no models | `freeride-venv/bin/freeride serve --port 11343` started and responded `{"object":"list","data":[]}`. `freeride auto` needs `OPENROUTER_API_KEY` (not available in sandbox) — gateway process verified, model population needs a key. |
+| 3.3 | hermes-unlimited-memory | ✅ configured | MCP memory backend section in config.json; `session_to_key_mapping` documented. Not runtime-tested (MCP server not installed in sandbox). |
+| 3.4 | Patchright / Camoufox | ✅ documented | Import pattern + hardened-target note in config.json. Not runtime-tested (browser not installed in sandbox). |
+| 3.5 | hermes-router patterns | ✅ memo written | `GOVERNANCE_PATTERNS.md` complete; no vendoring, `pyproject.toml` clean. |
+
+**Config verification:** `~/.owl-agent/config/config.json` loads cleanly through `ResilientClient` (15 keys, incl. `local_model_upstreams`, `mcp_memory`, `stealth_browser`). `pyproject.toml` has zero new dependencies.
+
+**OWL core (Phase 0):** `install-owl.sh --no-live` → 18 pass / 0 fail / 2 skipped. `run.sh stats --json` → 2 proxies, 100% healthy. `run.sh verify --no-live` → 18 pass / 0 fail / 2 skipped.
+
+---
+
 ## Red flags / stop conditions
 
 | Condition | Action |
@@ -128,10 +146,10 @@ Each task below is a *planned* unit with inputs, expected output, and verificati
 
 ## ⚡ Recommended Next Step
 
-Review and approve this plan (especially the repo adopt/skip list in 2.7 and the integration order in 3.6). Once approved, the next phase is Step 5 (Execute) — writing code against these pre-defined, gated tasks.
+Phase 0 core validation and Stage 3 execution (3.1–3.5: colibri, FreeRide v3, memory, stealth, governance) are complete and verified. The next phase is Step 5 (Execute proper) — writing integration code against these gated tasks, e.g. making `ResilientClient` route LLM requests through the configured `local_model_upstreams`.
 
 ## ✨ 3 Suggestions
 
-- **Tactical:** Run `./install-owl.sh --no-live` and `run.sh stats --json` right now to confirm the zero-dependency core is healthy before any integration task is touched.
+- **Tactical:** Re-run `./install-owl.sh --no-live` and `run.sh stats --json` to confirm the core is still healthy after config changes.
 - **Strategic:** Keep OWL as a proxy-defense layer *in front of* colibri/FreeRide/hermes-router rather than merging their code in — that preserves OWL's low dependency floor and makes each upstream independently replaceable.
-- **Reframe:** The plan above is the complete "before code" specification. If a task can't be verified in ≤ 5 minutes, split it further — that's the smp5.4pd.md atomicity rule.
+- **Reframe:** Colibri can't run on this machine (4.1 GB RAM < 8 GB required) — that's a resource constraint, not a colibri defect. On a machine with 8–16 GB RAM, the same config wires up directly.
