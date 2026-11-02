@@ -77,7 +77,8 @@ def make_server(backend=None):
 class TestRegistry:
     def test_tool_names(self):
         assert {tool["name"] for tool in TOOLS} == {
-            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate"}
+            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate",
+            "memory_set", "memory_get", "memory_search"}
 
     def test_every_tool_has_schema(self):
         for tool in TOOLS:
@@ -161,7 +162,8 @@ class TestProtocol:
         server, _ = make_server()
         response = run_frame(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         assert {tool["name"] for tool in response["result"]["tools"]} == {
-            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate"}
+            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate",
+            "memory_set", "memory_get", "memory_search"}
 
     def test_empty_resource_and_prompt_lists(self):
         server, out = make_server()
@@ -402,7 +404,7 @@ class TestStdio:
         responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         assert len(responses) == 2                       # notification produced nothing
         assert responses[0]["result"]["serverInfo"]["name"] == "owl-proxy"
-        assert len(responses[1]["result"]["tools"]) == 4
+        assert len(responses[1]["result"]["tools"]) == 7
         # stdout purity: every line is JSON, nothing else
         for line in result.stdout.splitlines():
             if line.strip():

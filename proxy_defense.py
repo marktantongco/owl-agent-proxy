@@ -111,6 +111,10 @@ DEFAULT_RATE = 1.0
 MAX_RETRIES = 3
 BACKOFF_BASE = 1.5
 
+# OpenAI-compatible API paths that OWL intercepts and routes through local
+# model upstreams (colibri primary, FreeRide failover) instead of the proxy pool.
+LLM_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/models", "/v1/embeddings")
+
 # v7.1 pool defaults
 DEFAULT_SESSION_TTL = 900.0      # 15 min sticky binding
 DEFAULT_HARVEST_INTERVAL = 600.0  # 10 min between upstream sweeps
@@ -844,6 +848,17 @@ class ResilientClient:
         self.rate_limit = rate_limit
         self.auto_load_proxies = auto_load_proxies
         self.default_protocol = default_protocol
+
+        # v7.2: local LLM model upstreams (colibri primary, FreeRide failover).
+        # Loaded from config.json `local_model_upstreams`. Keys are upstream
+        # names; values carry base_url, compatible, fallback_order, etc.
+        self.local_upstreams: Dict[str, Dict[str, Any]] = config.get(
+            "local_model_upstreams", {}
+        )
+        # Failover order = insertion order of the config dict.
+        self._upstream_order: List[str] = list(self.local_upstreams.keys())
+        # Sticky (agent_id, "llm-routing") → upstream name. Lazy-loaded.
+        self._upstream_affinity: Any = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._httpx_client = None
         self._httpx_proxied: Dict[str, Any] = {}
@@ -911,6 +926,23 @@ class ResilientClient:
         **kwargs,
     ):
         protocol = protocol or self.default_protocol
+
+        # v7.2 LLM routing: intercept OpenAI-compatible API calls and route
+        # through local model upstreams (colibri primary, FreeRide failover)
+        # instead of the proxy pool.
+        if self.local_upstreams and self._is_llm_request(url):
+            cached = await self.cache.get(method, url, params, protocol)
+            if cached:
+                return cached
+
+            async def llm_factory():
+                return await self._request_llm(
+                    method, url, params, headers,
+                    agent_id=agent_id, **kwargs,
+                )
+
+            return await self.dedup.execute(method, url, params, protocol, llm_factory)
+
         cached = await self.cache.get(method, url, params, protocol)
         if cached:
             return cached
@@ -1093,6 +1125,147 @@ class ResilientClient:
                     protocol="stealth")
             finally:
                 await page.close()
+
+    # ── v7.2 LLM routing ─────────────────────────────────────────────
+    # Intercept OpenAI-compatible API calls and route them through local model
+    # upstreams (colibri primary, FreeRide failover) instead of the proxy pool.
+    # Sticky (agent_id, "llm-routing") binding keeps an agent on one upstream
+    # for the life of a task; 429/502/503/504 or connection errors trigger
+    # failover to the next upstream in config order.
+
+    def _is_llm_request(self, url: str) -> bool:
+        """True when ``url`` targets an OpenAI-compatible LLM endpoint.
+
+        Matches OpenAI-compatible paths (chat/completions, completions, models,
+        embeddings) or any configured local upstream ``base_url`` prefix.
+        """
+        path = urlparse(url).path
+        for p in LLM_PATHS:
+            if path == p or path.startswith(p + "/"):
+                return True
+        for upstream in self.local_upstreams.values():
+            base = upstream.get("base_url", "")
+            if base and url.startswith(base.rstrip("/")):
+                return True
+        return False
+
+    def _rewrite_llm_url(self, url: str, upstream_name: str) -> str:
+        """Replace scheme+host+port with the upstream ``base_url``, keeping path+query.
+
+        Avoids duplicating ``/v1`` when the upstream ``base_url`` already ends
+        with it (colibri and FreeRide both expose ``.../v1``).
+        """
+        base_url = self.local_upstreams[upstream_name].get("base_url", "").rstrip("/")
+        parsed = urlparse(url)
+        query = f"?{parsed.query}" if parsed.query else ""
+        path = parsed.path
+        if base_url.endswith("/v1") and (path == "/v1" or path.startswith("/v1/")):
+            path = path[len("/v1"):] or "/"
+        return f"{base_url}{path}{query}"
+
+    async def _select_llm_upstream(self, agent_id: str) -> Optional[str]:
+        """Pick an LLM upstream via sticky affinity, falling back to config order.
+
+        First call binds (agent_id, "llm-routing") to the primary upstream.
+        Subsequent calls return the bound upstream until it is invalidated
+        (on 429/502/503/504 or connection error), which triggers failover.
+        """
+        if not self._upstream_order:
+            return None
+
+        if self._upstream_affinity is None:
+            module = _load_harvester()
+            if module is None:
+                return self._upstream_order[0]
+            self._upstream_affinity = module.SessionAffinityManager(
+                ttl_seconds=self.session_ttl
+            )
+
+        domain = "llm-routing"
+        bound = await self._upstream_affinity.get(agent_id, domain)
+        if bound and bound in self._upstream_order:
+            return bound
+
+        primary = self._upstream_order[0]
+        await self._upstream_affinity.bind(agent_id, domain, primary)
+        return primary
+
+    async def _invalidate_llm_binding(self, agent_id: str) -> None:
+        """Drop the sticky upstream binding so the next call fails over."""
+        if self._upstream_affinity is None:
+            return
+        await self._upstream_affinity.invalidate(agent_id, "llm-routing")
+
+    async def _request_llm(
+        self,
+        method: str,
+        url: str,
+        params: Optional[Dict],
+        headers: Optional[Dict],
+        agent_id: str = "default",
+        **kwargs: Any,
+    ) -> CachedResponse:
+        """Execute an LLM request through local upstreams with failover.
+
+        Tries upstreams in config order (colibri → FreeRide → …). On 429/502/
+        503/504 or connection error, invalidates the sticky binding and tries
+        the next upstream. Raises only when every upstream has failed.
+        """
+        attempted: set = set()
+        upstream_name = await self._select_llm_upstream(agent_id)
+
+        while upstream_name and upstream_name not in attempted:
+            attempted.add(upstream_name)
+            upstream = self.local_upstreams[upstream_name]
+            base_url = upstream.get("base_url", "")
+            if not base_url:
+                upstream_name = None
+                continue
+
+            llm_url = self._rewrite_llm_url(url, upstream_name)
+
+            try:
+                await self.limiter.acquire(llm_url)
+                async with self._session.request(
+                    method=method,
+                    url=llm_url,
+                    params=params,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                    **kwargs,
+                ) as resp:
+                    content = await resp.read()
+                    response = CachedResponse(
+                        status=resp.status,
+                        content=content,
+                        headers=dict(resp.headers),
+                        timestamp=0,
+                        ttl=0,
+                        protocol="http/1.1",
+                    )
+
+                    if resp.status in (429, 502, 503, 504):
+                        # Upstream overloaded or down — fail over.
+                        await self._invalidate_llm_binding(agent_id)
+                        upstream_name = self._next_upstream(attempted)
+                        continue
+
+                    await self.cache.set(method, llm_url, response, params)
+                    return response
+
+            except Exception as exc:  # connection error, DNS, timeout, etc.
+                logger.warning("LLM upstream %s failed: %s", upstream_name, exc)
+                await self._invalidate_llm_binding(agent_id)
+                upstream_name = self._next_upstream(attempted)
+
+        raise RuntimeError(f"All LLM upstreams failed for {url}")
+
+    def _next_upstream(self, attempted: set) -> Optional[str]:
+        """Return the next upstream not yet attempted, or None."""
+        for name in self._upstream_order:
+            if name not in attempted:
+                return name
+        return None
 
     async def get_stats(self) -> Dict[str, Any]:
         total = len(self.rotator.proxies)
