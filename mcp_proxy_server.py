@@ -290,7 +290,7 @@ class ProxyBackend:
                 "rotation_mode": rotation_mode,
                 "reason": "pool empty or still validating — fall back to a direct fetch",
             }
-        return {
+        result = {
             "proxy": entry.url,
             "domain": domain,
             "agent_id": agent_id,
@@ -300,6 +300,23 @@ class ProxyBackend:
             "source": entry.source,
             "latency_ms": round(entry.latency_ms, 1) if entry.latency_ms else None,
         }
+        # v7.2: persist sticky bindings to memory so they survive restarts
+        if self.memory is not None and rotation_mode == "sticky":
+            mem_key = f"owl:binding:{agent_id}:{domain}"
+            import json as _json
+            self.memory.set(
+                mem_key,
+                _json.dumps({
+                    "proxy": entry.url,
+                    "domain": domain,
+                    "agent_id": agent_id,
+                    "protocol": entry.protocol,
+                    "tier": entry.tier,
+                    "source": entry.source,
+                }),
+                ttl_seconds=self.memory.ttl_seconds,
+            )
+        return result
 
     async def stats(self) -> Dict[str, Any]:
         await self.start()

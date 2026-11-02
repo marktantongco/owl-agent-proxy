@@ -404,7 +404,7 @@ class TestStdio:
         responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         assert len(responses) == 2                       # notification produced nothing
         assert responses[0]["result"]["serverInfo"]["name"] == "owl-proxy"
-        assert len(responses[1]["result"]["tools"]) == 4
+        assert len(responses[1]["result"]["tools"]) == 7
         # stdout purity: every line is JSON, nothing else
         for line in result.stdout.splitlines():
             if line.strip():
