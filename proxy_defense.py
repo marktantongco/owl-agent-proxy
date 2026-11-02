@@ -803,6 +803,7 @@ class ResilientClient:
         max_proxies: Optional[int] = None,
         config_path: Optional[Union[str, Path]] = None,
         pool: Optional[PoolBackend] = None,
+        cache_file: Optional[Path] = None,
     ):
         config = self._read_config(config_path)
         self.config = config
@@ -841,7 +842,7 @@ class ResilientClient:
             validator_concurrency=int(config.get("validator_concurrency", 10)),
             validator_timeout=float(config.get("validator_timeout", 8.0)),
             max_per_source=int(config.get("max_per_source", 300)),
-            cache_file=PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None,
+            cache_file=cache_file or (PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None),
         )
         self.max_retries = max_retries
         self.cache_ttl = cache_ttl

@@ -238,6 +238,8 @@ class ProxyBackend:
                 client = ResilientClient(
                     use_upstream_harvester=self.harvest,
                     session_ttl=self.session_ttl,
+                    auto_load_proxies=False,
+                    cache_file=None,
                 )
                 await client.__aenter__()
                 self._client = client
