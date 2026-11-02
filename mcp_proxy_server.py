@@ -15,7 +15,7 @@ Three stdio rules are enforced:
 2. diagnostics go to stderr.
 3. exactly one JSON object per line.
 
-Tools: proxy_pick, proxy_stats, proxy_rotate, proxy_validate.
+Tools: proxy_pick, proxy_stats, proxy_rotate, proxy_validate, memory_set, memory_get, memory_search.
 
 Run:
     python mcp_proxy_server.py            # serve on stdio
@@ -303,10 +303,9 @@ class ProxyBackend:
         # v7.2: persist sticky bindings to memory so they survive restarts
         if self.memory is not None and rotation_mode == "sticky":
             mem_key = f"owl:binding:{agent_id}:{domain}"
-            import json as _json
             self.memory.set(
                 mem_key,
-                _json.dumps({
+                json.dumps({
                     "proxy": entry.url,
                     "domain": domain,
                     "agent_id": agent_id,
