@@ -8,6 +8,7 @@ import subprocess
 import time
 import types
 import unittest
+from collections import deque
 from unittest.mock import AsyncMock, patch, MagicMock
 from pathlib import Path
 import tempfile
@@ -68,6 +69,124 @@ class TestProxyEntry(unittest.TestCase):
         entry.mark_success(50.0)
         self.assertEqual(entry.fail_count, 0)
         self.assertTrue(entry.healthy)
+
+    def test_mark_success_appends_latency_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.mark_success(10.0)
+        entry.mark_success(20.0)
+        entry.mark_success(30.0)
+        self.assertEqual(list(entry.latency_history), [10.0, 20.0, 30.0])
+        self.assertEqual(entry.latency_ms, 30.0)  # last measurement still tracked
+
+    def test_p99_latency_empty_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.latency_ms = 42.0
+        self.assertEqual(entry.p99_latency_ms, 42.0)
+
+    def test_p99_latency_single_sample(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.mark_success(50.0)
+        self.assertEqual(entry.p99_latency_ms, 50.0)
+
+    def test_p99_latency_multiple_samples(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        # 50 samples (window maxlen): 1..50 ms, nearest-rank P99 = max = 50 ms
+        for i in range(1, 51):
+            entry.mark_success(float(i))
+        self.assertEqual(entry.p99_latency_ms, 50.0)
+
+    def test_p99_latency_rolling_window(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        # Fill past the maxlen=50 window
+        for i in range(1, 61):
+            entry.mark_success(float(i))
+        self.assertEqual(len(entry.latency_history), 50)
+        # Oldest (1..10) evicted, history is 11..60
+        self.assertEqual(list(entry.latency_history)[0], 11.0)
+        self.assertEqual(list(entry.latency_history)[-1], 60.0)
+
+    def test_serialization_roundtrip_preserves_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        for lat in (10.0, 20.0, 30.0):
+            entry.mark_success(lat)
+        data = entry.to_dict()
+        restored = ProxyEntry.from_dict(data)
+        self.assertEqual(list(restored.latency_history), [10.0, 20.0, 30.0])
+        self.assertEqual(restored.p99_latency_ms, entry.p99_latency_ms)
+
+
+class TestProxyRotatorLatency(unittest.TestCase):
+    """Rank 6: latency budget / P99 selection tests."""
+
+    def test_get_proxy_sorts_by_p99_not_last_latency(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=5.0, latency_history=deque([5.0, 500.0, 500.0, 500.0])),
+                    ProxyEntry(url="http://steady:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=100.0, latency_history=deque([100.0, 100.0, 100.0, 100.0])),
+                ],
+                use_upstream_harvester=False,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            # steady (P99=100) should be selected before slow (P99=500)
+            # even though slow has better last-latency (5ms)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://steady:8080")
+        asyncio.run(run())
+
+    def test_latency_budget_excludes_high_p99(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://fast:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=10.0, latency_history=deque([10.0, 10.0, 10.0])),
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                ],
+                use_upstream_harvester=False,
+                latency_budget_ms=100.0,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://fast:8080")
+
+    def test_latency_budget_fail_open_when_all_exceed(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://slow1:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                    ProxyEntry(url="http://slow2:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=600.0, latency_history=deque([600.0, 600.0, 600.0])),
+                ],
+                use_upstream_harvester=False,
+                latency_budget_ms=100.0,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            # All exceed budget: fail-open returns the least-bad (slow1, P99=500)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://slow1:8080")
+
+    def test_no_latency_budget_uses_all_candidates(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://fast:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=10.0, latency_history=deque([10.0, 10.0, 10.0])),
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                ],
+                use_upstream_harvester=False,
+                # latency_budget_ms not set -> no filtering
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertEqual(proxy.url, "http://fast:8080")
 
 
 class TestHTTPCache(unittest.TestCase):

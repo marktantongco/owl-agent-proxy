@@ -14,6 +14,7 @@ v7.1 additions (all optional, all lazy — cold import stays dependency-light):
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import sys
 import hashlib
@@ -22,7 +23,7 @@ import time
 import random
 import importlib.util
 import logging
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, deque, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
@@ -526,6 +527,8 @@ class ProxyEntry:
     # succeeds, so a stale upstream list never reaches the request path.
     validated: bool = True
     added_at: float = field(default_factory=time.time)
+    # Rank 6: rolling window of recent successful latencies for P99 computation.
+    latency_history: deque = field(default_factory=lambda: deque(maxlen=50))
 
     def is_banned(self) -> bool:
         return time.time() < self.ban_until
@@ -542,7 +545,25 @@ class ProxyEntry:
         self.healthy = True
         self.validated = True
         self.latency_ms = latency_ms
+        self.latency_history.append(latency_ms)
         self.last_check = time.time()
+
+    @property
+    def p99_latency_ms(self) -> float:
+        """99th-percentile latency over the recent success history.
+
+        Falls back to ``latency_ms`` (the last measurement) when no history
+        exists yet. With few samples this returns the max observed value,
+        which is conservative: a single slow measurement keeps P99 high until
+        more samples dilute it.
+        """
+        if not self.latency_history:
+            return self.latency_ms
+        ordered = sorted(self.latency_history)
+        n = len(ordered)
+        # Nearest-rank P99: index = ceil(0.99 * n) - 1, clamped to [0, n-1]
+        idx = max(0, min(n - 1, math.ceil(0.99 * n) - 1))
+        return ordered[idx]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -557,12 +578,13 @@ class ProxyEntry:
             "fail_count": self.fail_count,
             "ban_until": self.ban_until,
             "latency_ms": self.latency_ms,
+            "latency_history": list(self.latency_history),
             "added_at": self.added_at,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProxyEntry":
-        return cls(
+        entry = cls(
             url=data["url"],
             proxy_type=data.get("proxy_type", "free"),
             protocol=data.get("protocol", "http"),
@@ -576,6 +598,11 @@ class ProxyEntry:
             validated=bool(data.get("validated", False)),
             added_at=float(data.get("added_at", time.time())),
         )
+        # Restore rolling history if present (older cache files won't have it)
+        history = data.get("latency_history")
+        if isinstance(history, list):
+            entry.latency_history = deque(history, maxlen=50)
+        return entry
 
 
 class ProxyPoolLoader:
@@ -911,6 +938,7 @@ class UpstreamHarvestingMixin:
             "honeypot_rejections": self._rejected,
             "unvalidated": sum(1 for p in self.proxies if not p.validated),
             "pending_validation": self._validation_queue.qsize(),
+            "latency_budget_ms": getattr(self, "latency_budget_ms", None),
             "sources": self.source_health(),
         }
 
@@ -946,6 +974,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         max_per_source: int = 300,
         cache_file: Optional[Path] = None,
         external_proxies: Optional[List[str]] = None,
+        latency_budget_ms: Optional[float] = None,
     ):
         self.proxies: List[ProxyEntry] = proxies or []
         self._current_index = 0
@@ -961,6 +990,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.validator_timeout = validator_timeout
         self.max_per_source = max_per_source
         self.cache_file = cache_file
+        self.latency_budget_ms = latency_budget_ms
         self.external_proxies: List[str] = external_proxies or []
         self._urls: set = set()
         self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
@@ -1027,7 +1057,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         keep = sorted(
             self.proxies,
             key=lambda p: (p.tier == 1, p.validated, p.healthy,
-                           -p.latency_ms, p.added_at),
+                           -p.p99_latency_ms, p.added_at),
             reverse=True,
         )[: self.max_proxies]
         keep_ids = {id(p) for p in keep}
@@ -1114,7 +1144,15 @@ class ProxyRotator(UpstreamHarvestingMixin):
             if mode == "random":
                 proxy = random.choice(candidates)
             else:
-                candidates.sort(key=lambda p: (p.tier, p.latency_ms))
+                # Rank 6: sort by P99 latency instead of last raw measurement.
+                # Apply latency budget when configured (fail-open: if every
+                # candidate exceeds the budget, fall back to all candidates).
+                budget = self.latency_budget_ms
+                if budget is not None:
+                    within_budget = [p for p in candidates
+                                     if p.p99_latency_ms <= budget]
+                    candidates = within_budget or candidates
+                candidates.sort(key=lambda p: (p.tier, p.p99_latency_ms))
                 proxy = candidates[self._current_index % len(candidates)]
                 self._current_index += 1
 
