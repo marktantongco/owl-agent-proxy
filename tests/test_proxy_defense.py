@@ -4,15 +4,18 @@
 """
 
 import asyncio
+import json
+import os
 import subprocess
+import sys
 import time
 import types
 import unittest
 from collections import deque
-from unittest.mock import AsyncMock, patch, MagicMock
 from pathlib import Path
+from unittest.mock import AsyncMock, patch, MagicMock
+
 import tempfile
-import json
 
 import proxy_defense
 from proxy_defense import (
@@ -2793,6 +2796,49 @@ class TestCLIStatsCommand(unittest.TestCase):
         asyncio.run(run())
 
 
+
+
+class TestVerificationSuiteDrift(unittest.TestCase):
+    """Rank 11: verification suite drift — ensure verify-install.py expectations match the repo."""
+
+    def test_run_sh_exists_and_executable(self):
+        run_sh = Path(__file__).resolve().parent.parent / "run.sh"
+        self.assertTrue(run_sh.exists(), "run.sh must exist in repo root")
+        self.assertTrue(os.access(run_sh, os.X_OK), "run.sh must be executable")
+
+    def test_config_json_exists_with_required_keys(self):
+        config_path = Path(__file__).resolve().parent.parent / "config" / "config.json"
+        self.assertTrue(config_path.exists(), "config/config.json must exist")
+        data = json.loads(config_path.read_text())
+        for key in ("use_upstream_harvester", "session_ttl", "harvest_interval"):
+            self.assertIn(key, data, f"config.json missing required key: {key}")
+
+    def test_tool_prefixes_allow_web_github_arxiv(self):
+        """V18: tool names may start with proxy_, memory_, web_, github_, or arxiv_."""
+        allowed = ("proxy_", "memory_", "web_", "github_", "arxiv_")
+        tool_names = [
+            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate",
+            "memory_set", "memory_get", "memory_search",
+            "web_search", "web_fetch", "web_open",
+            "arxiv_search", "github_search",
+        ]
+        for name in tool_names:
+            self.assertTrue(
+                name.startswith(allowed),
+                f"tool name '{name}' does not start with an allowed prefix",
+            )
+
+    def test_verification_script_runs_offline(self):
+        """Running verify-install.py --no-live against the repo root yields 0 failures."""
+        repo_root = Path(__file__).resolve().parent.parent
+        verify = repo_root / "scripts" / "verify-install.py"
+        result = subprocess.run(
+            [sys.executable, str(verify), "--owl-home", str(repo_root),
+             "--python", sys.executable, "--no-live"],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0,
+                         f"verification failed:\n{result.stdout}\n{result.stderr}")
 
 
 if __name__ == "__main__":

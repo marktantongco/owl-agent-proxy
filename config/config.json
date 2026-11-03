@@ -1,0 +1,23 @@
+{
+  "use_upstream_harvester": false,
+  "session_ttl": 900,
+  "harvest_interval": 600,
+  "cache_ttl": 300,
+  "rate_limit": 1.0,
+  "max_retries": 3,
+  "cache_max_entries": 10000,
+  "dedup_max_in_flight": 1000,
+  "honeypot_check": true,
+  "max_proxies": 2000,
+  "external_proxies": [],
+  "proxy_credentials": {},
+  "middleware": [],
+  "filter_rules": [],
+  "validator_concurrency": 10,
+  "validator_timeout": 8.0,
+  "max_per_source": 300,
+  "persist_proxy_cache": true,
+  "latency_budget_ms": 500.0,
+  "local_model_upstreams": {},
+  "token_bucket_persist_file": "~/.owl-agent/config/token_buckets.json"
+}
