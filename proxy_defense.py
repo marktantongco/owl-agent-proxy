@@ -616,6 +616,11 @@ class ProxyRotator(UpstreamHarvestingMixin):
     Upstream harvesting is opt-in (``use_upstream_harvester=True``). Harvested
     entries enter the pool at tier 4 with ``healthy=False`` and are only promoted
     after a real probe, so a stale list cannot poison the request path.
+
+    External proxies (BounceBack stealth redirector, https_proxy forward proxy)
+    are configured via ``external_proxies`` — a list of proxy URL strings. They
+    enter the pool at tier 1 (highest priority) so explicitly configured stealth
+    egress takes precedence over harvested free proxies.
     """
 
     def __init__(
@@ -631,6 +636,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         validator_timeout: float = 8.0,
         max_per_source: int = 300,
         cache_file: Optional[Path] = None,
+        external_proxies: Optional[List[str]] = None,
     ):
         self.proxies: List[ProxyEntry] = proxies or []
         self._current_index = 0
@@ -646,6 +652,24 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.validator_timeout = validator_timeout
         self.max_per_source = max_per_source
         self.cache_file = cache_file
+        self.external_proxies: List[str] = external_proxies or []
+
+        # Register external proxies (BounceBack, https_proxy) at tier 1.
+        for url in self.external_proxies:
+            if url in self._urls:
+                continue
+            entry = ProxyEntry(
+                url=url,
+                proxy_type="external",
+                protocol="http",
+                source="external_config",
+                tier=1,
+                healthy=True,
+                validated=True,
+                latency_ms=0.0,
+            )
+            self.proxies.append(entry)
+            self._remember(entry)
 
         self._affinity = None          # SessionAffinityManager (lazy)
         self._harvester = None         # UpstreamHarvester (lazy)
@@ -828,6 +852,7 @@ class ResilientClient:
         harvest_interval: Optional[float] = None,
         honeypot_check: Optional[bool] = None,
         max_proxies: Optional[int] = None,
+        external_proxies: Optional[List[str]] = None,
         config_path: Optional[Union[str, Path]] = None,
         pool: Optional[PoolBackend] = None,
         cache_file: Optional[Path] = None,
@@ -858,6 +883,11 @@ class ResilientClient:
         self.harvest_interval = float(pick(harvest_interval, "harvest_interval", DEFAULT_HARVEST_INTERVAL))
         self.honeypot_check = bool(pick(honeypot_check, "honeypot_check", True))
         resolved_max_proxies = int(pick(max_proxies, "max_proxies", DEFAULT_MAX_PROXIES))
+        # External stealth egress proxies (BounceBack redirector, https_proxy
+        # forward proxy). Read from config.json `external_proxies` list, or the
+        # constructor parameter if provided.
+        config_external = config.get("external_proxies", [])
+        self.external_proxies: List[str] = list(external_proxies or config_external or [])
         # A pool backend can be injected (paid provider, Redis-backed pool, test
         # double); ProxyRotator remains the default implementation.
         self.rotator: PoolBackend = pool if pool is not None else ProxyRotator(
@@ -870,6 +900,7 @@ class ResilientClient:
             validator_timeout=float(config.get("validator_timeout", 8.0)),
             max_per_source=int(config.get("max_per_source", 300)),
             cache_file=cache_file or (PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None),
+            external_proxies=self.external_proxies,
         )
         self.max_retries = max_retries
         self.cache_ttl = cache_ttl

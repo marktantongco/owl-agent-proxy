@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -128,6 +129,64 @@ TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "query": {"type": "string", "description": "FTS5 query string"},
                 "limit": {"type": "integer", "description": "max results", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    # ── websearch-skill tools (keyless multi-engine web search) ──────────────
+    {
+        "name": "web_search",
+        "description": "Search the web across multiple engines (keyless ddgs metasearch). Returns ranked, deduplicated results with reusable handles.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "search query"},
+                "engines": {"type": "string", "description": "comma-separated engine subset (e.g. google,brave,mojeek), default: all"},
+                "max_results": {"type": "integer", "description": "max results", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "web_fetch",
+        "description": "Fetch a URL and extract clean Markdown + metadata via trafilatura.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "web_open",
+        "description": "Open a previously fetched page from cache by handle, without re-fetching.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "page handle from web_fetch or web_search result"},
+            },
+            "required": ["handle"],
+        },
+    },
+    {
+        "name": "arxiv_search",
+        "description": "Search arXiv papers (keyless, no API key). Returns structured metadata with abstract and PDF links.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "arXiv search query"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "github_search",
+        "description": "Search GitHub repositories (keyless, no token). Returns typed fields: stars, language, topics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "GitHub search query"},
             },
             "required": ["query"],
         },
@@ -652,7 +711,75 @@ class OwlMcpServer:
                 return {"error": "query required"}
             results = self.memory.search(query, limit=limit)
             return {"ok": True, "results": results, "count": len(results)}
+
+        if name == "web_search":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"error": "query required"}
+            cmd = ["web-search", query]
+            engines = args.get("engines")
+            if engines:
+                cmd.extend(["--ddgs-backends", str(engines)])
+            max_results = args.get("max_results")
+            if max_results:
+                cmd.extend(["--max-results", str(max_results)])
+            return await self._run_websearch(cmd)
+
+        if name == "web_fetch":
+            url = str(args.get("url") or "").strip()
+            if not url:
+                return {"error": "url required"}
+            return await self._run_websearch(["web-fetch", url])
+
+        if name == "web_open":
+            handle = str(args.get("handle") or "").strip()
+            if not handle:
+                return {"error": "handle required"}
+            return await self._run_websearch(["web-open", handle])
+
+        if name == "arxiv_search":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"error": "query required"}
+            return await self._run_websearch(["arxiv", query])
+
+        if name == "github_search":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"error": "query required"}
+            return await self._run_websearch(["github", query])
+
         raise ValueError(f"unknown tool: {name}")
+
+    # ── websearch-skill helper ─────────────────────────────────────────────
+
+    async def _run_websearch(self, cmd: List[str]) -> Dict[str, Any]:
+        """Run a websearch-skill CLI command and parse its JSON output."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "websearch",
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return {
+                    "error": f"websearch command failed (exit {proc.returncode})",
+                    "stderr": stderr.decode("utf-8", errors="replace")[:500],
+                }
+            output = stdout.decode("utf-8", errors="replace").strip()
+            if not output:
+                return {"ok": True, "results": [], "count": 0}
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError:
+                # websearch may emit human-readable text; wrap it
+                return {"ok": True, "raw": output}
+        except FileNotFoundError:
+            return {"error": "websearch-skill not installed (pip install websearch-skill)"}
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"error": f"websearch execution failed: {type(exc).__name__}: {exc}"}
 
     # ── main loop ──
     async def serve(self, stream=None) -> int:
