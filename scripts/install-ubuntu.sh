@@ -78,24 +78,25 @@ check_python() {
 install_system_deps() {
     header "System Dependencies"
     if [[ $EUID -eq 0 ]]; then
-        info "Installing build-essential, python3-dev, libssl-dev, curl, git..."
+        # No compiler toolchain on purpose. The three runtime dependencies
+        # (aiohttp, aiofiles, httpx) publish manylinux wheels for every supported
+        # interpreter, so build-essential, python3-dev, libssl-dev and libffi-dev
+        # would be installed to compile libraries this project does not import.
+        # If a future dependency has no wheel, pip says so and this list grows.
+        info "Installing python3, venv, git, curl, ca-certificates..."
         apt-get update -qq
         apt-get install -y -qq \
-            build-essential \
-            python3-dev \
+            python3 \
             python3-pip \
             python3-venv \
-            libssl-dev \
-            libffi-dev \
             curl \
             git \
-            wget \
             ca-certificates \
             2>&1 | tail -1
         pass "System dependencies installed"
     else
         warn "Skipping system packages (not root)"
-        warn "If builds fail, run: sudo apt install build-essential python3-dev libssl-dev"
+        warn "If a build fails, run: sudo apt install python3 python3-venv git curl"
     fi
 }
 
@@ -130,25 +131,30 @@ setup_venv() {
 install_phase1_core() {
     header "Phase 1: Core (http/1.1)"
     source "$VENV_DIR/bin/activate"
-    info "Installing core dependencies..."
-    pip install --quiet \
-        aiohttp>=3.11.0 \
-        aiofiles>=24.1.0 \
-        cachetools>=5.5.0 \
-        orjson>=3.10.0 \
-        cryptography>=44.0.0 \
-        PySocks>=1.7.1 \
-        requests>=2.32.0 \
-        urllib3>=2.4.0 \
-        PyYAML>=6.0.2 \
-        tenacity>=9.1.0 \
-        fake-useragent>=2.2.0 \
-        aiohttp-socks>=0.10.0 \
-        certifi>=2025.0.0 \
-        python-dateutil>=2.9.0 \
-        2>&1 | tail -1
+
+    # Install from requirements.txt instead of repeating the list here. This
+    # function used to carry its own copy, which drifted: it still installed 14
+    # packages (cachetools, orjson, cryptography, PySocks, PyYAML, tenacity, …)
+    # that no module imports, and asserted they were importable, so it would have
+    # failed its own check once the list was corrected.
+    local reqs="$INSTALL_DIR/requirements.txt"
+    if [[ ! -f "$reqs" ]]; then
+        fail "requirements.txt not found at $reqs"
+        ((ERRORS++))
+        return 1
+    fi
+
+    info "Installing core dependencies from requirements.txt..."
+    if ! pip install --quiet -r "$reqs" 2>&1 | tail -1; then
+        fail "core dependency install failed"
+        ((ERRORS++))
+        return 1
+    fi
     pass "Core dependencies installed"
-    $PYTHON -c "import aiohttp, aiofiles, cachetools, orjson, cryptography, socks; print('    ✓ Imports verified')" 2>&1 || { fail "Core import check failed"; ((ERRORS++)); }
+
+    # Assert what the modules actually import.
+    $PYTHON -c "import aiohttp, aiofiles, httpx; print('    ✓ Imports verified')" 2>&1 \
+        || { fail "Core import check failed"; ((ERRORS++)); }
 }
 
 install_phase2_http2() {
