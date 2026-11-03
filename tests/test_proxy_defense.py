@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 import json
 
+import proxy_defense
 from proxy_defense import (
     CachedResponse,
     TokenBucket,
@@ -26,6 +27,8 @@ from proxy_defense import (
     FilterRule,
     FilterAction,
     chain,
+    nginx_camouflage_middleware,
+    basic_auth_camouflage_middleware,
 )
 
 
@@ -104,6 +107,53 @@ class TestProxyRotator(unittest.TestCase):
             p2 = await rotator.get_proxy()
             self.assertNotEqual(p1.url, p2.url)
         asyncio.run(run())
+class TestProxyRotatorUpstream(unittest.TestCase):
+    """Tests for ProxyRotator upstream harvesting lifecycle."""
+
+    def test_start_upstream_disabled_returns_false(self):
+        async def run():
+            rotator = ProxyRotator(proxies=[], use_upstream_harvester=False)
+            result = await rotator.start_upstream()
+            self.assertFalse(result)
+        asyncio.run(run())
+
+    def test_start_upstream_missing_module_returns_false(self):
+        async def run():
+            rotator = ProxyRotator(proxies=[], use_upstream_harvester=True)
+            with patch("proxy_defense._load_harvester", return_value=None):
+                result = await rotator.start_upstream()
+            self.assertFalse(result)
+        asyncio.run(run())
+
+    def test_stop_upstream_no_tasks(self):
+        async def run():
+            rotator = ProxyRotator(proxies=[], use_upstream_harvester=False)
+            # Should not raise even with no tasks
+            await rotator.stop_upstream()
+        asyncio.run(run())
+
+    def test_healthy_entries_filters_unhealthy(self):
+        async def run():
+            proxies = [
+                ProxyEntry(url="http://p1:80", proxy_type="dc", protocol="http", source="test", tier=1, healthy=True),
+                ProxyEntry(url="http://p2:80", proxy_type="dc", protocol="http", source="test", tier=1, healthy=False),
+            ]
+            rotator = ProxyRotator(proxies=proxies)
+            healthy = rotator.healthy_entries()
+            self.assertEqual(len(healthy), 1)
+            self.assertEqual(healthy[0].url, "http://p1:80")
+        asyncio.run(run())
+
+    def test_healthy_entries_filters_banned(self):
+        async def run():
+            p = ProxyEntry(url="http://p1:80", proxy_type="dc", protocol="http", source="test", tier=1, healthy=True)
+            p.ban_until = time.time() + 300  # banned for 5 minutes
+            rotator = ProxyRotator(proxies=[p])
+            healthy = rotator.healthy_entries()
+            self.assertEqual(len(healthy), 0)
+        asyncio.run(run())
+
+
 
 
 class TestLLMRouting(unittest.TestCase):
@@ -1505,6 +1555,465 @@ class TestMiddlewareIntegration(unittest.TestCase):
 # ── CLI tests ────────────────────────────────────────────────────────────
 
 
+# ── nginx camouflage middleware tests ───────────────────────────────────
+
+
+class TestNginxCamouflageMiddleware(unittest.TestCase):
+    """Tests for https_proxy-inspired nginx camouflage middleware."""
+
+    def test_nginx_camouflage_adds_server_header(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware()], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.headers.get("server"), "nginx/1.24.0")
+        asyncio.run(run())
+
+    def test_nginx_camouflage_fake_404(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"secret", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware(
+                    fake_404_paths=["/.hidden", "/admin"],
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com/.hidden",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.status, 404)
+            self.assertEqual(result.headers.get("server"), "nginx/1.24.0")
+        asyncio.run(run())
+
+    def test_nginx_camouflage_custom_server_name(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware(server_name="nginx/1.18.0")],
+                fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.headers.get("server"), "nginx/1.18.0")
+        asyncio.run(run())
+
+    def test_basic_auth_camouflage_forwards_header(self):
+        async def run():
+            captured_headers = {}
+
+            async def fake_handler(ctx):
+                captured_headers.update(ctx.headers or {})
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [basic_auth_camouflage_middleware(
+                    auth_header="Basic dXNlcjpwYXNz",
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(
+                captured_headers.get("Authorization"),
+                "Basic dXNlcjpwYXNz",
+            )
+        asyncio.run(run())
+
+    def test_basic_auth_camouflage_401_www_authenticate(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=401, content=b"unauthorized", headers={},
+                    timestamp=time.time(), ttl=0, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [basic_auth_camouflage_middleware(
+                    www_authenticate_realm="MyProxy",
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.status, 401)
+            self.assertEqual(
+                result.headers.get("WWW-Authenticate"),
+                'Basic realm="MyProxy"',
+            )
+        asyncio.run(run())
+
+
+# ── protocol handler tests ─────────────────────────────────────────────
+
+
+class TestProtocolHandlers(unittest.TestCase):
+    """Tests for protocol handlers when dependencies are unavailable."""
+
+    def test_request_http2_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_http2(
+                    "GET", "http://example.com", None, {}, None,
+                )
+        asyncio.run(run())
+
+    def test_request_ja3_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_ja3(
+                    "GET", "http://example.com", None, {}, None,
+                )
+        asyncio.run(run())
+
+    def test_request_websocket_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_websocket("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_browser_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_browser("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_stealth_requires_acknowledgement(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(proxy_defense.ProtocolUnavailable):
+                await client._request_stealth("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_stealth_raises_when_not_installed(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with patch("proxy_defense._stealth_acknowledged", return_value=True):
+                with patch("proxy_defense._load_stealth", return_value=None):
+                    with self.assertRaises(proxy_defense.ProtocolUnavailable):
+                        await client._request_stealth("http://example.com", None)
+        asyncio.run(run())
+class TestProtocolHandlerSuccessPaths(unittest.TestCase):
+    """Tests for protocol handler success paths with mocked dependencies."""
+
+    def _async_context_manager(self, obj):
+        """Wrap an object as an async context manager returning itself."""
+        async def enter():
+            return obj
+        async def exit(*exc):
+            return False
+        cm = AsyncMock()
+        cm.__aenter__ = enter
+        cm.__aexit__ = exit
+        return cm
+
+    def test_request_http1_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakeResp:
+                status = 200
+                content = b"hello"
+                headers = {"content-type": "text/plain"}
+
+                async def read(self):
+                    return self.content
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return False
+
+            class FakeSession:
+                def request(self, method, url, **kwargs):
+                    return FakeResp()
+
+            client._session = FakeSession()
+
+            result = await client._request_http1(
+                "GET", "http://example.com", None, {}, None,
+            )
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.content, b"hello")
+            self.assertEqual(result.protocol, "http/1.1")
+        asyncio.run(run())
+
+    def test_request_http2_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakeResp:
+                status_code = 200
+                content = b"hello2"
+                headers = {"content-type": "text/plain"}
+
+            fake_client = AsyncMock()
+            fake_client.request.return_value = FakeResp()
+            client._httpx_client = fake_client
+
+            with patch("proxy_defense.HTTP2_AVAILABLE", True):
+                result = await client._request_http2(
+                    "GET", "http://example.com", None, {}, None,
+                )
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.content, b"hello2")
+            self.assertEqual(result.protocol, "http/2")
+        asyncio.run(run())
+
+    def test_request_http2_no_client_raises(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            client._httpx_client = None
+            with patch("proxy_defense.HTTP2_AVAILABLE", True):
+                with self.assertRaises(RuntimeError):
+                    await client._request_http2(
+                        "GET", "http://example.com", None, {}, None,
+                    )
+        asyncio.run(run())
+
+    def test_request_ja3_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakeResp:
+                status_code = 200
+                content = b"ja3-data"
+                headers = {"content-type": "text/plain"}
+
+            fake_session = AsyncMock()
+            fake_session.request.return_value = FakeResp()
+            client._curl_session = fake_session
+
+            result = await client._request_ja3(
+                "GET", "http://example.com", None, {}, None,
+            )
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.content, b"ja3-data")
+            self.assertEqual(result.protocol, "ja3")
+        asyncio.run(run())
+
+    def test_request_websocket_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakeWS:
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *exc):
+                    return False
+
+            def ws_connect(url, **kwargs):
+                return FakeWS()
+
+            with patch("proxy_defense.WS_AVAILABLE", True):
+                proxy_defense.websockets = MagicMock()
+                proxy_defense.websockets.connect = ws_connect
+                try:
+                    result = await client._request_websocket("ws://example.com", None)
+                finally:
+                    del proxy_defense.websockets
+            self.assertEqual(result.status, 101)
+            self.assertEqual(result.protocol, "websocket")
+        asyncio.run(run())
+
+    def test_request_browser_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakePage:
+                async def goto(self, *a, **k):
+                    return None
+                async def content(self):
+                    return "<html></html>"
+                async def close(self):
+                    return None
+
+            class FakeContext:
+                async def new_page(self):
+                    return FakePage()
+                async def close(self):
+                    return None
+
+            class FakeBrowser:
+                async def new_context(self, *a, **k):
+                    return FakeContext()
+                async def close(self):
+                    return None
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *exc):
+                    return False
+
+            class FakePlaywrightCM:
+                chromium = AsyncMock()
+                chromium.launch = AsyncMock(return_value=FakeBrowser())
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *exc):
+                    return False
+
+            def fake_async_playwright():
+                return FakePlaywrightCM()
+
+            with patch("proxy_defense.PLAYWRIGHT_AVAILABLE", True):
+                proxy_defense.async_playwright = fake_async_playwright
+                try:
+                    result = await client._request_browser("http://example.com", None)
+                finally:
+                    del proxy_defense.async_playwright
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.protocol, "browser")
+        asyncio.run(run())
+
+    def test_request_stealth_success(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            class FakePage:
+                async def goto(self, *a, **k):
+                    return None
+                async def content(self):
+                    return "<html>stealth</html>"
+                async def close(self):
+                    return None
+
+            class FakeBrowser:
+                async def new_page(self):
+                    return FakePage()
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *exc):
+                    return False
+
+            class FakeStealthCM:
+                async def __aenter__(self):
+                    return FakeBrowser()
+                async def __aexit__(self, *exc):
+                    return False
+
+            def fake_stealth_cls(**launch_kwargs):
+                return FakeStealthCM()
+
+            with patch("proxy_defense._stealth_acknowledged", return_value=True):
+                with patch("proxy_defense._load_stealth", return_value=fake_stealth_cls):
+                    result = await client._request_stealth(
+                        "http://example.com", None,
+                        acknowledge_terms=True,
+                    )
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.protocol, "stealth")
+        asyncio.run(run())
+
+
+class TestResilientClientContextManager(unittest.TestCase):
+    """Tests for ResilientClient __aenter__/__aexit__ lifecycle."""
+
+    def test_aenter_creates_sessions(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+
+            fake_session = AsyncMock()
+            fake_session.close = AsyncMock()
+
+            fake_httpx = AsyncMock()
+            fake_httpx.aclose = AsyncMock()
+
+            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+                with patch("proxy_defense.HTTP2_AVAILABLE", True):
+                    with patch("proxy_defense.httpx.AsyncClient", return_value=fake_httpx):
+                        with patch("proxy_defense.JA3_AVAILABLE", False):
+                            async with client:
+                                self.assertIsNotNone(client._session)
+            fake_session.close.assert_called()
+        asyncio.run(run())
+
+    def test_aexit_closes_proxied_clients(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            stale_client = AsyncMock()
+            stale_client.aclose = AsyncMock()
+            client._httpx_proxied = {"http://proxy:3128": stale_client}
+
+            await client.__aexit__(None, None, None)
+            stale_client.aclose.assert_called_once()
+            self.assertEqual(len(client._httpx_proxied), 0)
+        asyncio.run(run())
+
+    def test_aenter_loads_cache(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            client.rotator.load_cache = MagicMock()
+
+            fake_session = AsyncMock()
+            fake_session.close = AsyncMock()
+
+            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+                with patch("proxy_defense.HTTP2_AVAILABLE", False):
+                    with patch("proxy_defense.JA3_AVAILABLE", False):
+                        async with client:
+                            pass
+            client.rotator.load_cache.assert_called_once()
+        asyncio.run(run())
+
+    def test_aenter_start_upstream(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False, use_upstream_harvester=True)
+            client.rotator.start_upstream = AsyncMock()
+            client.rotator.load_cache = MagicMock()
+
+            fake_session = AsyncMock()
+            fake_session.close = AsyncMock()
+
+            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+                with patch("proxy_defense.HTTP2_AVAILABLE", False):
+                    with patch("proxy_defense.JA3_AVAILABLE", False):
+                        async with client:
+                            pass
+            client.rotator.start_upstream.assert_called_once()
+        asyncio.run(run())
+
+    def test_aenter_exception_cleanup(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            fake_session = AsyncMock()
+            fake_session.close = AsyncMock()
+
+            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+                with patch.object(client.rotator, "load_cache", side_effect=RuntimeError("boom")):
+                    with patch("proxy_defense.HTTP2_AVAILABLE", False):
+                        with patch("proxy_defense.JA3_AVAILABLE", False):
+                            with self.assertRaises(RuntimeError):
+                                async with client:
+                                    pass
+            fake_session.close.assert_called_once()
+        asyncio.run(run())
+
 class TestCLI(unittest.TestCase):
     """Tests for proxy_defense.py CLI entry point."""
 
@@ -1516,6 +2025,89 @@ class TestCLI(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("proxy defense", result.stdout.lower())
+class TestCLIStatsCommand(unittest.TestCase):
+    """Tests for the CLI stats command (no network required)."""
+
+    def test_cli_stats_json_output(self):
+        async def run():
+            fake_stats = {
+                "proxies_total": 5,
+                "proxies_healthy": 3,
+                "proxies_banned": 1,
+                "proxies_by_tier": {1: 3, 2: 2},
+                "domains_rate_limited": 2,
+                "health_ratio": "3/5 (60.0%)",
+                "protocols_available": {
+                    "http/1.1": True,
+                    "http/2": False,
+                    "ja3": False,
+                    "websocket": False,
+                    "browser": False,
+                    "stealth": False,
+                },
+                "version": "7.1",
+                "upstream_harvester": {"running": False, "sources": 0},
+                "source_health": {},
+                "session_affinity": {"active": 0},
+                "cache_memory_size": 0,
+                "dedup_in_flight": 0,
+            }
+
+            fake_client = AsyncMock()
+            fake_client.get_stats.return_value = fake_stats
+
+            with patch("proxy_defense.ResilientClient") as mock_client_class:
+                mock_client_class.return_value.__aenter__ = AsyncMock(return_value=fake_client)
+                mock_client_class.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                result = await proxy_defense._cli(["stats", "--json"])
+            self.assertEqual(result, 0)
+        asyncio.run(run())
+
+    def test_cli_stats_text_output(self):
+        async def run():
+            fake_stats = {
+                "proxies_total": 5,
+                "proxies_healthy": 3,
+                "proxies_banned": 1,
+                "proxies_by_tier": {1: 3, 2: 2},
+                "domains_rate_limited": 2,
+                "health_ratio": "3/5 (60.0%)",
+                "protocols_available": {
+                    "http/1.1": True,
+                    "http/2": False,
+                    "ja3": False,
+                    "websocket": False,
+                    "browser": False,
+                    "stealth": False,
+                },
+                "version": "7.1",
+                "upstream_harvester": {"running": True, "sources": 3, "harvested_total": 10, "unvalidated": 2},
+                "source_health": {},
+                "session_affinity": {"active": 0},
+                "cache_memory_size": 0,
+                "dedup_in_flight": 0,
+            }
+
+            fake_client = AsyncMock()
+            fake_client.get_stats.return_value = fake_stats
+
+            with patch("proxy_defense.ResilientClient") as mock_client_class:
+                mock_client_class.return_value.__aenter__ = AsyncMock(return_value=fake_client)
+                mock_client_class.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                result = await proxy_defense._cli(["stats"])
+            self.assertEqual(result, 0)
+        asyncio.run(run())
+
+    def test_cli_no_command_returns_demo(self):
+        async def run():
+            # _demo makes a live request which will fail, but returns 0
+            result = await proxy_defense._cli([])
+            self.assertEqual(result, 0)
+        asyncio.run(run())
+
+
 
 
 if __name__ == "__main__":

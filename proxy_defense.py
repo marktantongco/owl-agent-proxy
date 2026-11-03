@@ -410,6 +410,89 @@ class FilterPipeline:
             return False
 
 
+# ── nginx camouflage middleware (ported from https_proxy patterns) ─────────
+# Inspired by madeye/https_proxy stealth features:
+#   * nginx 404 camouflage — fake 404 responses for sensitive paths
+#   * server_name spoofing — "Server: nginx/1.24.0" header
+#   * basic auth camouflage
+#   * CONNECT tunneling awareness
+
+FAKE_404_BODY = b"<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found</h1></center>\n<hr><center>nginx/1.24.0</center>\n</body>\n</html>\n"
+
+
+def nginx_camouflage_middleware(
+    server_name: str = "nginx/1.24.0",
+    fake_404_paths: Optional[List[str]] = None,
+    fake_404_body: bytes = FAKE_404_BODY,
+) -> Middleware:
+    """Middleware that camouflages the proxy as an nginx server.
+
+    Inspired by madeye/https_proxy's nginx camouflage and fake 404 features.
+    Adds nginx-style Server header and can return fake 404 responses for
+    sensitive paths to hide the proxy's true nature.
+    """
+    fake_404_paths = fake_404_paths or []
+
+    def mw(handler):
+        async def wrapped(ctx: RequestContext):
+            # Check if this request should get a fake 404
+            path = urlparse(ctx.url).path
+            if any(path == fp or path.startswith(fp + "/") for fp in fake_404_paths):
+                return CachedResponse(
+                    status=404,
+                    content=fake_404_body,
+                    headers={
+                        "content-type": "text/html",
+                        "server": server_name,
+                        "connection": "close",
+                    },
+                    timestamp=time.time(),
+                    ttl=0,
+                    protocol=ctx.protocol,
+                )
+
+            result = await handler(ctx)
+
+            # Add nginx camouflage headers to the response
+            if result.headers is None:
+                result.headers = {}
+            result.headers.setdefault("server", server_name)
+            result.headers.setdefault("connection", "close")
+
+            return result
+        return wrapped
+    return mw
+
+
+def basic_auth_camouflage_middleware(
+    auth_header: Optional[str] = None,
+    www_authenticate_realm: str = "nginx",
+) -> Middleware:
+    """Middleware that adds basic auth camouflage headers.
+
+    When ``auth_header`` is provided, forwards it to the upstream.
+    When a 401 is received, returns a WWW-Authenticate header to mimic
+    nginx basic auth.
+    """
+    def mw(handler):
+        async def wrapped(ctx: RequestContext):
+            if auth_header:
+                if ctx.headers is None:
+                    ctx.headers = {}
+                ctx.headers["Authorization"] = auth_header
+
+            result = await handler(ctx)
+
+            if result.status == 401:
+                if result.headers is None:
+                    result.headers = {}
+                result.headers["WWW-Authenticate"] = f'Basic realm="{www_authenticate_realm}"'
+
+            return result
+        return wrapped
+    return mw
+
+
 @dataclass
 class ProxyEntry:
     url: str
