@@ -6,6 +6,7 @@
 import asyncio
 import subprocess
 import time
+import types
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
 from pathlib import Path
@@ -884,8 +885,12 @@ class TestExternalProxies(unittest.TestCase):
                 self.assertEqual(p.tier, 1)
                 self.assertEqual(p.proxy_type, "external")
                 self.assertEqual(p.source, "external_config")
-                self.assertTrue(p.validated)
-                self.assertTrue(p.healthy)
+                # External proxies start unvalidated — they enter the same
+                # validation pipeline as harvested proxies before being used.
+                self.assertFalse(p.validated)
+                self.assertFalse(p.healthy)
+            # Both are enqueued for validation
+            self.assertEqual(rotator._validation_queue.qsize(), 2)
         asyncio.run(run())
 
     def test_external_proxies_selected_before_harvested(self):
@@ -898,6 +903,13 @@ class TestExternalProxies(unittest.TestCase):
                 proxies=proxies,
                 external_proxies=["http://127.0.0.1:8080"],
             )
+            # External proxies start unvalidated — not returned until they
+            # pass validation. Simulate a successful validation:
+            external = rotator._find("http://127.0.0.1:8080")
+            external.healthy = True
+            external.validated = True
+            external.latency_ms = 10.0
+
             proxy = await rotator.get_proxy(domain="example.com")
             self.assertEqual(proxy.url, "http://127.0.0.1:8080")
             self.assertEqual(proxy.tier, 1)
@@ -937,6 +949,60 @@ class TestExternalProxies(unittest.TestCase):
             rotator = client.rotator
             external = [p for p in rotator.proxies if p.proxy_type == "external"]
             self.assertEqual(len(external), 0)
+        asyncio.run(run())
+
+    def test_external_proxy_fails_validation_removed(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[],
+                external_proxies=["http://127.0.0.1:8080"],
+                use_upstream_harvester=False,
+            )
+            self.assertEqual(len(rotator.proxies), 1)
+
+            # Mock validate_proxy to return failure (must be async since it's awaited)
+            async def fake_validate_fail(url, timeout=None):
+                return {"ok": False}
+            fake_module = types.ModuleType("fake_module")
+            fake_module.validate_proxy = fake_validate_fail
+            with patch("proxy_defense._load_harvester", return_value=fake_module):
+                rotator._sem = asyncio.Semaphore(1)
+                # Three failed validations trigger ban + removal
+                for _ in range(3):
+                    await rotator._validate_entry("http://127.0.0.1:8080")
+
+            # External proxy removed after exhausting failure budget
+            self.assertEqual(len(rotator.proxies), 0)
+        asyncio.run(run())
+
+    def test_external_proxy_passes_validation_becomes_healthy(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[],
+                external_proxies=["http://127.0.0.1:8080"],
+                use_upstream_harvester=False,
+            )
+            entry_before = rotator._find("http://127.0.0.1:8080")
+            self.assertIsNotNone(entry_before)
+            self.assertFalse(entry_before.healthy)
+            self.assertFalse(entry_before.validated)
+
+            # Mock validate_proxy to return success (must be async since it's awaited)
+            async def fake_validate_ok(url, timeout=None):
+                return {"ok": True, "tcp_ms": 50, "http_ms": 100}
+            fake_module = types.ModuleType("fake_module")
+            fake_module.validate_proxy = fake_validate_ok
+            with patch("proxy_defense._load_harvester", return_value=fake_module):
+                rotator._sem = asyncio.Semaphore(1)
+                await rotator._validate_entry("http://127.0.0.1:8080")
+
+            # External proxy is now healthy and validated at tier 1
+            entry = rotator._find("http://127.0.0.1:8080")
+            self.assertIsNotNone(entry)
+            self.assertTrue(entry.healthy)
+            self.assertTrue(entry.validated)
+            self.assertEqual(entry.tier, 1)
+            self.assertEqual(entry.latency_ms, 150.0)
         asyncio.run(run())
 
 

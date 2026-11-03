@@ -963,12 +963,17 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.cache_file = cache_file
         self.external_proxies: List[str] = external_proxies or []
         self._urls: set = set()
+        self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         # Seed _urls from initial proxies so duplicate detection works
         # for external proxies that may already exist in the pool.
         for proxy in self.proxies:
             self._remember(proxy)
 
         # Register external proxies (BounceBack, https_proxy) at tier 1.
+        # They start unvalidated and enter the same validation pipeline as
+        # harvested proxies (TCP/HTTP probe + honeypot check). Tier 1 priority
+        # only applies once they pass validation; until then they are not
+        # returned by get_proxy() and do not bypass health checking.
         for url in self.external_proxies:
             if url in self._urls:
                 continue
@@ -978,12 +983,18 @@ class ProxyRotator(UpstreamHarvestingMixin):
                 protocol="http",
                 source="external_config",
                 tier=1,
-                healthy=True,
-                validated=True,
-                latency_ms=0.0,
+                healthy=False,
+                validated=False,
+                latency_ms=9999.0,
             )
             self.proxies.append(entry)
             self._remember(entry)
+            # Enqueue for validation if the validation loop is running;
+            # otherwise the entry waits until start_upstream() is called.
+            try:
+                self._validation_queue.put_nowait(url)
+            except Exception:
+                pass
 
         self._affinity = None          # SessionAffinityManager (lazy)
         self._harvester = None         # UpstreamHarvester (lazy)
@@ -991,7 +1002,6 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self._harvest_task: Optional[asyncio.Task] = None
         self._validation_task: Optional[asyncio.Task] = None
         self._validation_tasks: set = set()
-        self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         self._sem: Optional[asyncio.Semaphore] = None
         self._harvested = 0
         self._rejected = 0
