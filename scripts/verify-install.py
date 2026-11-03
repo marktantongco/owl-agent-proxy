@@ -340,8 +340,8 @@ class Checks:
         # equality here is what silently broke this check when they landed.
         required = {"proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate"}
         assert required <= tools, f"missing proxy tools: {required - tools}"
-        assert all(name.startswith("proxy_") or name.startswith("memory_")
-                   for name in tools), tools
+        allowed_prefixes = ("proxy_", "memory_", "web_", "github_", "arxiv_")
+        assert all(name.startswith(allowed_prefixes) for name in tools), tools
         for line in result.stdout.splitlines():
             if line.strip():
                 json.loads(line)  # stdout purity

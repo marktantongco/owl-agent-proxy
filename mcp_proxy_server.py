@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -413,69 +414,162 @@ class ProxyBackend:
 # SQLite + FTS5 (stdlib). Reads config.json `mcp_memory` section. When enabled,
 # stores session bindings and arbitrary key/value entries persistently so they
 # survive across OWL restarts.
+#
+# Rank 8: concurrent access protection.
+#   * threading.Lock serializes in-process access to the single sqlite3
+#     connection (sqlite3 connections are not thread-safe; concurrent asyncio
+#     tasks or threads sharing one connection corrupt state). This lock works
+#     identically whether the caller is synchronous (tests) or async (MCP tool
+#     handlers running in the event loop).
+#   * fcntl.flock on a sibling lock file serializes cross-process access, so
+#     two OWL instances pointing at the same memory.db cannot write at once.
+#   * WAL mode + busy_timeout lets readers proceed while a writer holds the
+#     lock, and makes SQLite retry automatically on transient lock contention.
 class MemoryBackend:
     def __init__(self, enabled: bool = False, db_path: Optional[Path] = None,
-                 ttl_seconds: int = 86400):
+                 ttl_seconds: int = 86400, lock_timeout: float = 5.0):
+        import threading
         self.enabled = enabled
         self.ttl_seconds = ttl_seconds
+        self.lock_timeout = lock_timeout
         self._db: Optional[Any] = None
+        self._lock_file: Optional[Any] = None
         # Resolved against OWL_AGENT_HOME, not Path.home(): a relocated install
         # must keep its cache inside the install, and reading config from one
         # home while writing state to another is a data-location bug.
         self._db_path = db_path or (Path(_OWL_HOME) / "cache" / "memory.db")
+        # In-process serialization: one sqlite3 connection, one writer at a time.
+        # RLock (reentrant) so _connect can be called from within _run_locked.
+        self._lock = threading.RLock()
+
+    # ── cross-process file locking (fcntl.flock on a sibling lock file) ──
+    def _acquire_file_lock(self) -> None:
+        """Block until the cross-process lock on ``<db>.lock`` is held."""
+        if self._lock_file is not None:
+            return  # already held by this instance
+        lock_path = str(self._db_path) + ".lock"
+        self._lock_file = open(lock_path, "w")
+        deadline = time.monotonic() + self.lock_timeout
+        while True:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    self._lock_file.close()
+                    self._lock_file = None
+                    raise TimeoutError(
+                        f"could not acquire lock on {lock_path} within {self.lock_timeout}s"
+                    )
+                time.sleep(0.05)
+
+    def _release_file_lock(self) -> None:
+        """Release the cross-process lock, if held by this instance."""
+        if self._lock_file is not None:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._lock_file.close()
+                self._lock_file = None
 
     def _connect(self) -> Any:
         import sqlite3
         if self._db is None:
-            self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._db = sqlite3.connect(str(self._db_path))
-            self._db.execute(
-                "CREATE TABLE IF NOT EXISTS memory ("
-                "  key TEXT PRIMARY KEY,"
-                "  value TEXT NOT NULL,"
-                "  expires_at REAL NOT NULL"
-                ")"
-            )
-            self._db.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
-                "USING fts5(key, value, content=memory, content_rowid=rowid)"
-            )
-            self._db.execute(
-                "CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN "
-                "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
-            )
-            self._db.execute(
-                "CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN "
-                "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); END"
-            )
-            self._db.execute(
-                "CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN "
-                "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); "
-                "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
-            )
-            self._db.commit()
+            with self._lock:
+                # Double-checked: another coroutine may have connected while
+                # we were waiting for the lock.
+                if self._db is None:
+                    self._db_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._acquire_file_lock()
+                    try:
+                        self._db = sqlite3.connect(
+                            str(self._db_path), timeout=self.lock_timeout,
+                        )
+                        # WAL mode: readers don't block writers and vice-versa;
+                        # also survives crash recovery better than rollback journal.
+                        self._db.execute("PRAGMA journal_mode=WAL")
+                        self._db.execute("PRAGMA synchronous=NORMAL")
+                        self._db.execute("PRAGMA busy_timeout=5000")
+                        self._db.execute(
+                            "CREATE TABLE IF NOT EXISTS memory ("
+                            "  key TEXT PRIMARY KEY,"
+                            "  value TEXT NOT NULL,"
+                            "  expires_at REAL NOT NULL"
+                            ")"
+                        )
+                        self._db.execute(
+                            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
+                            "USING fts5(key, value, content=memory, content_rowid=rowid)"
+                        )
+                        self._db.execute(
+                            "CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN "
+                            "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
+                        )
+                        self._db.execute(
+                            "CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN "
+                            "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); END"
+                        )
+                        self._db.execute(
+                            "CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN "
+                            "INSERT INTO memory_fts(memory_fts, rowid, key, value) VALUES ('delete', old.rowid, old.key, old.value); "
+                            "INSERT INTO memory_fts(rowid, key, value) VALUES (new.rowid, new.key, new.value); END"
+                        )
+                        self._db.commit()
+                    except Exception:
+                        self._release_file_lock()
+                        raise
         return self._db
+
+    def close(self) -> None:
+        """Release the db connection and cross-process lock."""
+        with self._lock:
+            if self._db is not None:
+                try:
+                    self._db.close()
+                except Exception:
+                    pass
+                self._db = None
+            self._release_file_lock()
+
+    def _run_locked(self, op):
+        """Run a sync DB operation under both the in-process lock and file lock.
+
+        The file lock is held for the lifetime of the connection (acquired in
+        _connect, released in close), so _run_locked only needs the threading
+        lock to serialize in-process access.
+        """
+        with self._lock:
+            self._connect()  # ensure connection exists (thread-safe via RLock)
+            return op()
 
     def set(self, key: str, value: str, ttl_seconds: Optional[int] = None) -> None:
         if not self.enabled:
             return
-        db = self._connect()
         ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
-        db.execute(
-            "INSERT OR REPLACE INTO memory(key, value, expires_at) VALUES (?, ?, ?)",
-            (key, value, time.time() + max(1, int(ttl))),
-        )
-        db.commit()
+
+        def _op() -> None:
+            db = self._connect()
+            db.execute(
+                "INSERT OR REPLACE INTO memory(key, value, expires_at) VALUES (?, ?, ?)",
+                (key, value, time.time() + max(1, int(ttl))),
+            )
+            db.commit()
+
+        self._run_locked(_op)
 
     def get(self, key: str) -> Optional[str]:
         if not self.enabled:
             return None
-        db = self._connect()
-        row = db.execute(
-            "SELECT value FROM memory WHERE key = ? AND expires_at > ?",
-            (key, time.time()),
-        ).fetchone()
-        return row[0] if row else None
+
+        def _op() -> Optional[str]:
+            db = self._connect()
+            row = db.execute(
+                "SELECT value FROM memory WHERE key = ? AND expires_at > ?",
+                (key, time.time()),
+            ).fetchone()
+            return row[0] if row else None
+
+        return self._run_locked(_op)
 
     def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         if not self.enabled:
@@ -486,22 +580,30 @@ class MemoryBackend:
         fts_query = " ".join('"' + term.strip('"') + '"' for term in query.split() if term.strip())
         if not fts_query:
             return []
-        db = self._connect()
-        rows = db.execute(
-            "SELECT m.key, m.value FROM memory m "
-            "WHERE m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?) "
-            "AND m.expires_at > ? LIMIT ?",
-            (fts_query, time.time(), max(1, min(limit, 50))),
-        ).fetchall()
-        return [{"key": r[0], "value": r[1]} for r in rows]
+
+        def _op() -> List[Dict[str, Any]]:
+            db = self._connect()
+            rows = db.execute(
+                "SELECT m.key, m.value FROM memory m "
+                "WHERE m.rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?) "
+                "AND m.expires_at > ? LIMIT ?",
+                (fts_query, time.time(), max(1, min(limit, 50))),
+            ).fetchall()
+            return [{"key": r[0], "value": r[1]} for r in rows]
+
+        return self._run_locked(_op)
 
     def sweep_expired(self) -> int:
         if not self.enabled:
             return 0
-        db = self._connect()
-        cur = db.execute("DELETE FROM memory WHERE expires_at <= ?", (time.time(),))
-        db.commit()
-        return cur.rowcount
+
+        def _op() -> int:
+            db = self._connect()
+            cur = db.execute("DELETE FROM memory WHERE expires_at <= ?", (time.time(),))
+            db.commit()
+            return cur.rowcount
+
+        return self._run_locked(_op)
 
 
 _OWL_HOME = str(Path(os.environ.get("OWL_AGENT_HOME", Path.home() / ".owl-agent")))

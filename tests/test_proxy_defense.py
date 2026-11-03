@@ -4,19 +4,26 @@
 """
 
 import asyncio
-import subprocess
-import time
-import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
-from pathlib import Path
-import tempfile
 import json
+import os
+import subprocess
+import sys
+import time
+import types
+import unittest
+from collections import deque
+from pathlib import Path
+from unittest.mock import AsyncMock, patch, MagicMock
+
+import tempfile
 
 import proxy_defense
 from proxy_defense import (
     CachedResponse,
     TokenBucket,
     ProxyEntry,
+    ProxyCredential,
+    CredentialStore,
     HTTPCache,
     RequestDeduplicator,
     DomainRateLimiter,
@@ -26,6 +33,8 @@ from proxy_defense import (
     FilterPipeline,
     FilterRule,
     FilterAction,
+    TOKEN_BUCKET_PERSIST_FILE,
+    validate_config,
     chain,
     nginx_camouflage_middleware,
     basic_auth_camouflage_middleware,
@@ -67,6 +76,253 @@ class TestProxyEntry(unittest.TestCase):
         entry.mark_success(50.0)
         self.assertEqual(entry.fail_count, 0)
         self.assertTrue(entry.healthy)
+
+    def test_mark_success_appends_latency_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.mark_success(10.0)
+        entry.mark_success(20.0)
+        entry.mark_success(30.0)
+        self.assertEqual(list(entry.latency_history), [10.0, 20.0, 30.0])
+        self.assertEqual(entry.latency_ms, 30.0)  # last measurement still tracked
+
+    def test_p99_latency_empty_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.latency_ms = 42.0
+        self.assertEqual(entry.p99_latency_ms, 42.0)
+
+    def test_p99_latency_single_sample(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        entry.mark_success(50.0)
+        self.assertEqual(entry.p99_latency_ms, 50.0)
+
+    def test_p99_latency_multiple_samples(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        # 50 samples (window maxlen): 1..50 ms, nearest-rank P99 = max = 50 ms
+        for i in range(1, 51):
+            entry.mark_success(float(i))
+        self.assertEqual(entry.p99_latency_ms, 50.0)
+
+    def test_p99_latency_rolling_window(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        # Fill past the maxlen=50 window
+        for i in range(1, 61):
+            entry.mark_success(float(i))
+        self.assertEqual(len(entry.latency_history), 50)
+        # Oldest (1..10) evicted, history is 11..60
+        self.assertEqual(list(entry.latency_history)[0], 11.0)
+        self.assertEqual(list(entry.latency_history)[-1], 60.0)
+
+    def test_serialization_roundtrip_preserves_history(self):
+        entry = ProxyEntry(url="http://proxy:8080", proxy_type="dc", protocol="http", source="test", tier=1)
+        for lat in (10.0, 20.0, 30.0):
+            entry.mark_success(lat)
+        data = entry.to_dict()
+        restored = ProxyEntry.from_dict(data)
+        self.assertEqual(list(restored.latency_history), [10.0, 20.0, 30.0])
+        self.assertEqual(restored.p99_latency_ms, entry.p99_latency_ms)
+
+
+class TestProxyRotatorLatency(unittest.TestCase):
+    """Rank 6: latency budget / P99 selection tests."""
+
+    def test_get_proxy_sorts_by_p99_not_last_latency(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=5.0, latency_history=deque([5.0, 500.0, 500.0, 500.0])),
+                    ProxyEntry(url="http://steady:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=100.0, latency_history=deque([100.0, 100.0, 100.0, 100.0])),
+                ],
+                use_upstream_harvester=False,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            # steady (P99=100) should be selected before slow (P99=500)
+            # even though slow has better last-latency (5ms)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://steady:8080")
+        asyncio.run(run())
+
+    def test_latency_budget_excludes_high_p99(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://fast:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=10.0, latency_history=deque([10.0, 10.0, 10.0])),
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                ],
+                use_upstream_harvester=False,
+                latency_budget_ms=100.0,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://fast:8080")
+
+    def test_latency_budget_fail_open_when_all_exceed(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://slow1:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                    ProxyEntry(url="http://slow2:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=600.0, latency_history=deque([600.0, 600.0, 600.0])),
+                ],
+                use_upstream_harvester=False,
+                latency_budget_ms=100.0,
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            # All exceed budget: fail-open returns the least-bad (slow1, P99=500)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertIsNotNone(proxy)
+            self.assertEqual(proxy.url, "http://slow1:8080")
+
+    def test_no_latency_budget_uses_all_candidates(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://fast:8080", proxy_type="dc", protocol="http", source="a", tier=1,
+                               latency_ms=10.0, latency_history=deque([10.0, 10.0, 10.0])),
+                    ProxyEntry(url="http://slow:8080", proxy_type="dc", protocol="http", source="b", tier=1,
+                               latency_ms=500.0, latency_history=deque([500.0, 500.0, 500.0])),
+                ],
+                use_upstream_harvester=False,
+                # latency_budget_ms not set -> no filtering
+            )
+            rotator._sem = asyncio.Semaphore(1)
+            proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
+            self.assertEqual(proxy.url, "http://fast:8080")
+
+
+
+class TestCredentialRotation(unittest.TestCase):
+    """Rank 7: credential rotation tests."""
+
+    def test_credential_is_available(self):
+        cred = ProxyCredential(username="user", password="pass", host="proxy.example.com")
+        self.assertTrue(cred.is_available())
+        cred.banned_until = time.time() + 300
+        self.assertFalse(cred.is_available())
+        cred.banned_until = 0
+        cred.fail_count = 3
+        self.assertFalse(cred.is_available())
+        cred.fail_count = 2
+        self.assertTrue(cred.is_available())
+
+    def test_credential_mark_failed_bans_after_3(self):
+        cred = ProxyCredential(username="user", password="pass", host="proxy.example.com")
+        cred.mark_failed()
+        cred.mark_failed()
+        self.assertTrue(cred.is_available())
+        cred.mark_failed()
+        self.assertFalse(cred.is_available())
+        self.assertGreater(cred.banned_until, time.time())
+
+    def test_credential_store_add_and_get(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        store.add("proxy.example.com", "user2", "pass2")
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user1", "pass1"))
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user2", "pass2"))
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user1", "pass1"))
+
+    def test_credential_store_no_creds_returns_none(self):
+        store = CredentialStore()
+        self.assertIsNone(store.get("unknown.example.com"))
+
+    def test_credential_store_unknown_host(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        self.assertIsNone(store.get("other.example.com"))
+
+    def test_credential_store_mark_failed_skips_banned(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        store.add("proxy.example.com", "user2", "pass2")
+        for _ in range(3):
+            store.mark_failed("proxy.example.com", "user1")
+        result = store.get("proxy.example.com")
+        self.assertEqual(result, ("user2", "pass2"))
+
+    def test_credential_store_all_banned_returns_none(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        for _ in range(3):
+            store.mark_failed("proxy.example.com", "user1")
+        self.assertIsNone(store.get("proxy.example.com"))
+
+    def test_credential_store_apply_inserts_credentials(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url, cred = store.apply("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://user1:pass1@proxy.example.com:8080")
+        self.assertEqual(cred, ("proxy.example.com", "user1"))
+
+    def test_credential_store_apply_keeps_existing_credentials(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url, cred = store.apply("http://embedded:creds@proxy.example.com:8080")
+        self.assertEqual(url, "http://embedded:creds@proxy.example.com:8080")
+        self.assertIsNone(cred)
+
+    def test_credential_store_apply_no_creds_returns_unchanged(self):
+        store = CredentialStore()
+        url, cred = store.apply("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://proxy.example.com:8080")
+        self.assertIsNone(cred)
+
+    def test_credential_store_apply_url_convenience(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url = store.apply_url("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://user1:pass1@proxy.example.com:8080")
+
+    def test_rotator_get_effective_url_with_credentials(self):
+        async def run():
+            store = CredentialStore()
+            store.add("proxy.example.com", "user1", "pass1")
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                               protocol="http", source="test", tier=1),
+                ],
+                use_upstream_harvester=False,
+                credential_store=store,
+            )
+            effective = rotator.get_effective_url(
+                ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                           protocol="http", source="test", tier=1)
+            )
+            self.assertEqual(effective, "http://user1:pass1@proxy.example.com:8080")
+        asyncio.run(run())
+
+    def test_rotator_get_effective_url_no_store(self):
+        rotator = ProxyRotator(
+            proxies=[],
+            use_upstream_harvester=False,
+        )
+        effective = rotator.get_effective_url(
+            ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                       protocol="http", source="test", tier=1)
+        )
+        self.assertEqual(effective, "http://proxy.example.com:8080")
+
+    def test_resilient_client_with_proxy_credentials(self):
+        client = ResilientClient(
+            auto_load_proxies=False,
+            proxy_credentials={"proxy.example.com": [("user1", "pass1"), ("user2", "pass2")]},
+        )
+        self.assertIsNotNone(client.credential_store)
+        self.assertEqual(client.credential_store.credential_count("proxy.example.com"), 2)
+        self.assertIs(client.rotator.credential_store, client.credential_store)
 
 
 class TestHTTPCache(unittest.TestCase):
@@ -362,6 +618,153 @@ class TestTokenBucketMore(unittest.TestCase):
             self.assertIsInstance(result, bool)
             self.assertTrue(result)
         asyncio.run(run())
+
+
+
+
+class TestTokenBucketPersistence(unittest.TestCase):
+    """Rank 9: token-bucket persistence tests."""
+
+    def test_to_dict_from_dict_roundtrip(self):
+        bucket = TokenBucket(rate=2.0, capacity=10.0, tokens=3.5, last_update=1000.0)
+        data = bucket.to_dict()
+        self.assertEqual(data["tokens"], 3.5)
+        self.assertEqual(data["last_update"], 1000.0)
+        self.assertNotIn("rate", data)
+        self.assertNotIn("capacity", data)
+
+        restored = TokenBucket.from_dict(2.0, 10.0, data)
+        self.assertEqual(restored.rate, 2.0)
+        self.assertEqual(restored.capacity, 10.0)
+        self.assertEqual(restored.tokens, 3.5)
+        self.assertEqual(restored.last_update, 1000.0)
+
+    def test_from_dict_defaults_to_full_capacity(self):
+        restored = TokenBucket.from_dict(1.0, 5.0, {})
+        self.assertEqual(restored.tokens, 5.0)
+        self.assertGreaterEqual(restored.last_update, time.time() - 1)
+
+    def test_from_dict_partial_state(self):
+        restored = TokenBucket.from_dict(1.0, 5.0, {"tokens": 1.5})
+        self.assertEqual(restored.tokens, 1.5)
+        self.assertGreaterEqual(restored.last_update, time.time() - 1)
+
+
+class TestDomainRateLimiterPersistence(unittest.TestCase):
+    """Rank 9: DomainRateLimiter persistence tests."""
+
+    def test_load_state_missing_file_is_noop(self):
+        limiter = DomainRateLimiter(persist_file=Path("/nonexistent/buckets.json"))
+        limiter.load_state()
+        self.assertEqual(len(limiter._buckets), 0)
+
+    def test_load_state_corrupt_file_is_noop(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        persist_file.write_text("{not valid json")
+        limiter = DomainRateLimiter(persist_file=persist_file)
+        limiter.load_state()
+        self.assertEqual(len(limiter._buckets), 0)
+
+    def test_save_and_load_state_roundtrip(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        limiter = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        async def run():
+            await limiter.acquire("https://example.com/a")
+            await limiter.acquire("https://example.com/b")
+        asyncio.run(run())
+
+        limiter.save_state()
+        assert persist_file.exists()
+
+        limiter2 = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        limiter2.load_state()
+        bucket = limiter2._buckets["example.com"]
+        self.assertLess(bucket.tokens, 5.0)
+        self.assertGreater(bucket.tokens, 0.0)
+        self.assertEqual(bucket.rate, 1.0)
+        self.assertEqual(bucket.capacity, 5.0)
+
+    def test_persist_survives_restart(self):
+        """Simulate a process restart: new limiter loads old state."""
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+
+        limiter1 = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        async def run1():
+            await limiter1.acquire("https://example.com/x")
+            await limiter1.acquire("https://example.com/x")
+        asyncio.run(run1())
+        limiter1.save_state()
+
+        limiter2 = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        limiter2.load_state()
+        bucket = limiter2._buckets["example.com"]
+        self.assertLess(bucket.tokens, 5.0)
+
+    def test_in_memory_state_takes_precedence(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        limiter = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        limiter._buckets["example.com"] = TokenBucket(
+            rate=1.0, capacity=5.0, tokens=0.5, last_update=9999.0
+        )
+        persist_file.write_text(json.dumps({"example.com": {"tokens": 4.0, "last_update": 1.0}}))
+        limiter.load_state()
+        bucket = limiter._buckets["example.com"]
+        self.assertEqual(bucket.tokens, 0.5)
+        self.assertEqual(bucket.last_update, 9999.0)
+
+    def test_mark_dirty_triggers_debounced_save(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        limiter = DomainRateLimiter(
+            default_rate=1.0,
+            default_capacity=5.0,
+            persist_file=persist_file,
+        )
+        async def run():
+            for i in range(12):
+                await limiter.acquire(f"https://domain{i}.com/x")
+        asyncio.run(run())
+        assert persist_file.exists()
+
+    def test_close_persists_final_state(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        limiter = DomainRateLimiter(
+            default_rate=1.0, default_capacity=5.0, persist_file=persist_file
+        )
+        async def run():
+            await limiter.acquire("https://example.com/z")
+        asyncio.run(run())
+        limiter.close()
+        assert persist_file.exists()
+
+
+class TestResilientClientTokenBucketPersistence(unittest.TestCase):
+    """Rank 9: ResilientClient token_bucket_persist_file wiring."""
+
+    def test_resilient_client_accepts_persist_file(self):
+        persist_file = Path(tempfile.mkdtemp()) / "buckets.json"
+        client = ResilientClient(
+            auto_load_proxies=False,
+            token_bucket_persist_file=persist_file,
+        )
+        self.assertIsNotNone(client.limiter.persist_file)
+        self.assertEqual(client.limiter.persist_file, persist_file)
+        client.close()
+
+    def test_resilient_client_default_persist_file(self):
+        client = ResilientClient(auto_load_proxies=False)
+        self.assertIsNotNone(client.limiter.persist_file)
+        self.assertEqual(client.limiter.persist_file, TOKEN_BUCKET_PERSIST_FILE)
+        client.close()
 
 
 class TestHTTPCacheMore(unittest.TestCase):
@@ -717,6 +1120,98 @@ class TestResilientClientLifecycle(unittest.TestCase):
         self.assertEqual(client.dedup.max_in_flight, 100)
 
 
+class TestConfigSchema(unittest.TestCase):
+    """Rank 10: config schema validation tests."""
+
+    def test_validate_config_empty(self):
+        errors = validate_config({})
+        self.assertEqual(errors, [])
+
+    def test_validate_config_all_valid(self):
+        config = {
+            "cache_ttl": 300,
+            "rate_limit": 1.5,
+            "max_retries": 3,
+            "cache_max_entries": 10000,
+            "dedup_max_in_flight": 1000,
+            "token_bucket_persist_file": "/tmp/buckets.json",
+            "use_upstream_harvester": True,
+            "session_ttl": 900.0,
+            "harvest_interval": 600.0,
+            "honeypot_check": True,
+            "max_proxies": 2000,
+            "external_proxies": ["http://127.0.0.1:8080"],
+            "proxy_credentials": {"proxy.example.com": [("user", "pass")]},
+            "middleware": [],
+            "filter_rules": [],
+            "validator_concurrency": 10,
+            "validator_timeout": 8.0,
+            "max_per_source": 300,
+            "persist_proxy_cache": True,
+            "latency_budget_ms": 500.0,
+            "local_model_upstreams": {"colibri": {"name": "colibri"}},
+        }
+        errors = validate_config(config)
+        self.assertEqual(errors, [])
+
+    def test_validate_config_wrong_type(self):
+        errors = validate_config({"cache_ttl": "300"})
+        self.assertTrue(any("cache_ttl" in e for e in errors))
+        self.assertTrue(any("int" in e and "str" in e for e in errors))
+
+    def test_validate_config_below_min(self):
+        errors = validate_config({"cache_ttl": 0})
+        self.assertTrue(any("cache_ttl" in e and "minimum" in e for e in errors))
+
+    def test_validate_config_negative_rate_limit(self):
+        errors = validate_config({"rate_limit": -1.0})
+        self.assertTrue(any("rate_limit" in e for e in errors))
+
+    def test_validate_config_list_wrong_item_type(self):
+        errors = validate_config({"external_proxies": [123, "http://ok"]})
+        self.assertTrue(any("external_proxies" in e for e in errors))
+
+    def test_validate_config_dict_wrong_value_type(self):
+        errors = validate_config({"proxy_credentials": {"host": "not-a-list"}})
+        self.assertTrue(any("proxy_credentials" in e for e in errors))
+
+    def test_validate_config_unknown_key_warning(self):
+        # Unknown keys are warnings, not errors
+        errors = validate_config({"unknown_key": "value"})
+        self.assertEqual(errors, [])
+
+    def test_validate_config_not_dict(self):
+        errors = validate_config("not a dict")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("dict", errors[0])
+
+    def test_validate_config_list_item_wrong_type(self):
+        errors = validate_config({"filter_rules": ["not-a-dict"]})
+        self.assertTrue(any("filter_rules" in e for e in errors))
+
+    def test_read_config_invalid_values_logged(self):
+        import tempfile, os
+        config_path = Path(tempfile.mkdtemp()) / "config.json"
+        config_path.write_text(json.dumps({"cache_ttl": "not-an-int"}))
+        client = ResilientClient.__new__(ResilientClient)
+        with self.assertLogs("owl-agent.proxy", level="WARNING") as log:
+            result = client._read_config(config_path)
+        # Should still return the config (invalid values are warnings, not fatal)
+        self.assertEqual(result, {"cache_ttl": "not-an-int"})
+        # Warning should have been logged
+        assert any("cache_ttl" in msg for msg in log.output)
+
+    def test_read_config_non_dict_top_level(self):
+        import tempfile
+        config_path = Path(tempfile.mkdtemp()) / "config.json"
+        config_path.write_text(json.dumps([1, 2, 3]))
+        client = ResilientClient.__new__(ResilientClient)
+        with self.assertLogs("owl-agent.proxy", level="WARNING") as log:
+            result = client._read_config(config_path)
+        self.assertEqual(result, {})
+        assert any("top-level" in msg for msg in log.output)
+
+
 class TestProxyRotatorCacheRoundtrip(unittest.TestCase):
     """ProxyRotator save_cache / load_cache roundtrip."""
 
@@ -884,8 +1379,12 @@ class TestExternalProxies(unittest.TestCase):
                 self.assertEqual(p.tier, 1)
                 self.assertEqual(p.proxy_type, "external")
                 self.assertEqual(p.source, "external_config")
-                self.assertTrue(p.validated)
-                self.assertTrue(p.healthy)
+                # External proxies start unvalidated — they enter the same
+                # validation pipeline as harvested proxies before being used.
+                self.assertFalse(p.validated)
+                self.assertFalse(p.healthy)
+            # Both are enqueued for validation
+            self.assertEqual(rotator._validation_queue.qsize(), 2)
         asyncio.run(run())
 
     def test_external_proxies_selected_before_harvested(self):
@@ -898,6 +1397,13 @@ class TestExternalProxies(unittest.TestCase):
                 proxies=proxies,
                 external_proxies=["http://127.0.0.1:8080"],
             )
+            # External proxies start unvalidated — not returned until they
+            # pass validation. Simulate a successful validation:
+            external = rotator._find("http://127.0.0.1:8080")
+            external.healthy = True
+            external.validated = True
+            external.latency_ms = 10.0
+
             proxy = await rotator.get_proxy(domain="example.com")
             self.assertEqual(proxy.url, "http://127.0.0.1:8080")
             self.assertEqual(proxy.tier, 1)
@@ -937,6 +1443,60 @@ class TestExternalProxies(unittest.TestCase):
             rotator = client.rotator
             external = [p for p in rotator.proxies if p.proxy_type == "external"]
             self.assertEqual(len(external), 0)
+        asyncio.run(run())
+
+    def test_external_proxy_fails_validation_removed(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[],
+                external_proxies=["http://127.0.0.1:8080"],
+                use_upstream_harvester=False,
+            )
+            self.assertEqual(len(rotator.proxies), 1)
+
+            # Mock validate_proxy to return failure (must be async since it's awaited)
+            async def fake_validate_fail(url, timeout=None):
+                return {"ok": False}
+            fake_module = types.ModuleType("fake_module")
+            fake_module.validate_proxy = fake_validate_fail
+            with patch("proxy_defense._load_harvester", return_value=fake_module):
+                rotator._sem = asyncio.Semaphore(1)
+                # Three failed validations trigger ban + removal
+                for _ in range(3):
+                    await rotator._validate_entry("http://127.0.0.1:8080")
+
+            # External proxy removed after exhausting failure budget
+            self.assertEqual(len(rotator.proxies), 0)
+        asyncio.run(run())
+
+    def test_external_proxy_passes_validation_becomes_healthy(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[],
+                external_proxies=["http://127.0.0.1:8080"],
+                use_upstream_harvester=False,
+            )
+            entry_before = rotator._find("http://127.0.0.1:8080")
+            self.assertIsNotNone(entry_before)
+            self.assertFalse(entry_before.healthy)
+            self.assertFalse(entry_before.validated)
+
+            # Mock validate_proxy to return success (must be async since it's awaited)
+            async def fake_validate_ok(url, timeout=None):
+                return {"ok": True, "tcp_ms": 50, "http_ms": 100}
+            fake_module = types.ModuleType("fake_module")
+            fake_module.validate_proxy = fake_validate_ok
+            with patch("proxy_defense._load_harvester", return_value=fake_module):
+                rotator._sem = asyncio.Semaphore(1)
+                await rotator._validate_entry("http://127.0.0.1:8080")
+
+            # External proxy is now healthy and validated at tier 1
+            entry = rotator._find("http://127.0.0.1:8080")
+            self.assertIsNotNone(entry)
+            self.assertTrue(entry.healthy)
+            self.assertTrue(entry.validated)
+            self.assertEqual(entry.tier, 1)
+            self.assertEqual(entry.latency_ms, 150.0)
         asyncio.run(run())
 
 
@@ -2236,6 +2796,49 @@ class TestCLIStatsCommand(unittest.TestCase):
         asyncio.run(run())
 
 
+
+
+class TestVerificationSuiteDrift(unittest.TestCase):
+    """Rank 11: verification suite drift — ensure verify-install.py expectations match the repo."""
+
+    def test_run_sh_exists_and_executable(self):
+        run_sh = Path(__file__).resolve().parent.parent / "run.sh"
+        self.assertTrue(run_sh.exists(), "run.sh must exist in repo root")
+        self.assertTrue(os.access(run_sh, os.X_OK), "run.sh must be executable")
+
+    def test_config_json_exists_with_required_keys(self):
+        config_path = Path(__file__).resolve().parent.parent / "config" / "config.json"
+        self.assertTrue(config_path.exists(), "config/config.json must exist")
+        data = json.loads(config_path.read_text())
+        for key in ("use_upstream_harvester", "session_ttl", "harvest_interval"):
+            self.assertIn(key, data, f"config.json missing required key: {key}")
+
+    def test_tool_prefixes_allow_web_github_arxiv(self):
+        """V18: tool names may start with proxy_, memory_, web_, github_, or arxiv_."""
+        allowed = ("proxy_", "memory_", "web_", "github_", "arxiv_")
+        tool_names = [
+            "proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate",
+            "memory_set", "memory_get", "memory_search",
+            "web_search", "web_fetch", "web_open",
+            "arxiv_search", "github_search",
+        ]
+        for name in tool_names:
+            self.assertTrue(
+                name.startswith(allowed),
+                f"tool name '{name}' does not start with an allowed prefix",
+            )
+
+    def test_verification_script_runs_offline(self):
+        """Running verify-install.py --no-live against the repo root yields 0 failures."""
+        repo_root = Path(__file__).resolve().parent.parent
+        verify = repo_root / "scripts" / "verify-install.py"
+        result = subprocess.run(
+            [sys.executable, str(verify), "--owl-home", str(repo_root),
+             "--python", sys.executable, "--no-live"],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0,
+                         f"verification failed:\n{result.stdout}\n{result.stderr}")
 
 
 if __name__ == "__main__":
