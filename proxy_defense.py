@@ -511,6 +511,119 @@ def basic_auth_camouflage_middleware(
     return mw
 
 
+# ── Rank 7: credential rotation ─────────────────────────────────────────
+
+@dataclass
+class ProxyCredential:
+    """One set of proxy authentication credentials for a given host.
+
+    Multiple credentials can be registered per host; the CredentialStore
+    rotates through them round-robin, skipping banned or exhausted ones.
+    """
+    username: str
+    password: str
+    host: str
+    fail_count: int = 0
+    banned_until: float = 0.0
+    last_used: float = 0.0
+
+    def is_available(self) -> bool:
+        return time.time() >= self.banned_until and self.fail_count < 3
+
+    def mark_failed(self):
+        self.fail_count += 1
+        if self.fail_count >= 3:
+            self.banned_until = time.time() + 300
+            logger.warning(f"Proxy credential banned: {self.username}@{self.host}")
+
+
+class CredentialStore:
+    """Round-robin credential store per proxy host.
+
+    Holds multiple (username, password) sets per proxy host and hands out
+    the next available one on each request. When a credential receives a
+    407 Proxy Authentication Required, it is marked failed; after 3 failures
+    it is banned for 300 seconds. If all credentials for a host are
+    unavailable, returns None (caller falls back to credential-less proxy).
+    """
+
+    def __init__(self):
+        # host -> list of ProxyCredential
+        self._creds: Dict[str, List[ProxyCredential]] = defaultdict(list)
+        # host -> next rotation index
+        self._index: Dict[str, int] = {}
+
+    def add(self, host: str, username: str, password: str) -> None:
+        """Register a credential set for ``host``."""
+        self._creds[host].append(
+            ProxyCredential(username=username, password=password, host=host)
+        )
+
+    def get(self, host: str) -> Optional[Tuple[str, str]]:
+        """Return the next available (username, password) for ``host``.
+
+        Rotates round-robin, skipping banned/exhausted credentials. Returns
+        None when no credential is available for the host.
+        """
+        creds = self._creds.get(host)
+        if not creds:
+            return None
+        n = len(creds)
+        idx = self._index.get(host, 0) % n
+        attempts = 0
+        while attempts < n:
+            cred = creds[idx]
+            if cred.is_available():
+                self._index[host] = (idx + 1) % n
+                cred.last_used = time.time()
+                return (cred.username, cred.password)
+            idx = (idx + 1) % n
+            attempts += 1
+        return None
+
+    def mark_failed(self, host: str, username: str) -> None:
+        """Mark a credential as failed (e.g., 407 Proxy Auth Required)."""
+        for cred in self._creds.get(host, []):
+            if cred.username == username:
+                cred.mark_failed()
+                break
+
+    def hosts(self) -> List[str]:
+        return list(self._creds.keys())
+
+    def credential_count(self, host: str) -> int:
+        return len(self._creds.get(host, []))
+
+    def apply(self, proxy_url: str) -> Tuple[str, Optional[Tuple[str, str]]]:
+        """Insert the next available credential into ``proxy_url``.
+
+        Returns ``(effective_url, credential)`` where ``credential`` is
+        ``(username, password)`` if one was applied, or ``None`` otherwise.
+        If the URL already has embedded credentials, or no credential is
+        available for the host, the URL is returned unchanged with
+        ``credential=None``.
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(proxy_url)
+        if parsed.username:
+            return proxy_url, None
+        host = parsed.hostname or ""
+        creds = self.get(host)
+        if creds is None:
+            return proxy_url, None
+        username, password = creds
+        netloc = f"{username}:{password}@{parsed.hostname}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        effective = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        return effective, (host, username)
+
+    def apply_url(self, proxy_url: str) -> str:
+        """Convenience: return only the effective URL from ``apply()``."""
+        return self.apply(proxy_url)[0]
+
+
 @dataclass
 class ProxyEntry:
     url: str
@@ -946,18 +1059,10 @@ class UpstreamHarvestingMixin:
 class ProxyRotator(UpstreamHarvestingMixin):
     """Tier-sorted proxy pool with optional v7.1 upstream harvesting.
 
-    Selection order is tier then latency. When a domain is supplied and
-    ``rotation_mode="sticky"``, a binding from ``SessionAffinityManager`` wins —
-    that is what keeps an agent on one exit IP for the life of a task.
-
-    Upstream harvesting is opt-in (``use_upstream_harvester=True``). Harvested
-    entries enter the pool at tier 4 with ``healthy=False`` and are only promoted
-    after a real probe, so a stale list cannot poison the request path.
-
-    External proxies (BounceBack stealth redirector, https_proxy forward proxy)
-    are configured via ``external_proxies`` — a list of proxy URL strings. They
-    enter the pool at tier 1 (highest priority) so explicitly configured stealth
-    egress takes precedence over harvested free proxies.
+    Selection order is tier then P99 latency. Sticky bindings keep an agent
+    on one exit IP. Harvested entries enter at tier 4 (unvalidated) until a
+    probe succeeds. External proxies enter at tier 1 via the validation pipeline.
+    Rank 6: P99 latency + optional latency budget. Rank 7: credential rotation.
     """
 
     def __init__(
@@ -975,6 +1080,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         cache_file: Optional[Path] = None,
         external_proxies: Optional[List[str]] = None,
         latency_budget_ms: Optional[float] = None,
+        credential_store: Optional[CredentialStore] = None,
     ):
         self.proxies: List[ProxyEntry] = proxies or []
         self._current_index = 0
@@ -992,6 +1098,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.cache_file = cache_file
         self.latency_budget_ms = latency_budget_ms
         self.external_proxies: List[str] = external_proxies or []
+        self.credential_store: CredentialStore = credential_store or CredentialStore()
         self._urls: set = set()
         self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         # Seed _urls from initial proxies so duplicate detection works
@@ -1117,6 +1224,9 @@ class ProxyRotator(UpstreamHarvestingMixin):
     def healthy_entries(self) -> List[ProxyEntry]:
         return [p for p in self.proxies if p.healthy and not p.is_banned()]
 
+    def get_effective_url(self, proxy: ProxyEntry) -> str:
+        return self.credential_store.apply_url(proxy.url)
+
     async def get_proxy(
         self,
         domain: Optional[str] = None,
@@ -1224,6 +1334,7 @@ class ResilientClient:
         config_path: Optional[Union[str, Path]] = None,
         pool: Optional[PoolBackend] = None,
         cache_file: Optional[Path] = None,
+        proxy_credentials: Optional[Dict[str, List[Tuple[str, str]]]] = None,
     ):
         config = self._read_config(config_path)
         self.config = config
@@ -1260,6 +1371,16 @@ class ResilientClient:
         # constructor parameter if provided.
         config_external = config.get("external_proxies", [])
         self.external_proxies: List[str] = list(external_proxies or config_external or [])
+
+        # Rank 7: credential store for proxy authentication rotation.
+        # Credentials can be provided via constructor or config.json
+        # `proxy_credentials` (mapping host -> [(username, password), ...]).
+        config_creds = config.get("proxy_credentials", {})
+        resolved_creds: Dict[str, List[Tuple[str, str]]] = proxy_credentials or config_creds or {}
+        self.credential_store: CredentialStore = CredentialStore()
+        for host, cred_list in resolved_creds.items():
+            for username, password in cred_list:
+                self.credential_store.add(host, username, password)
         # v7.3: middleware chain (go-stealth pattern) + WAF filter pipeline
         # (BounceBack pattern). Read from config.json or constructor params.
         self.middleware: List[Middleware] = list(middleware or config.get("middleware", []) or [])
@@ -1288,6 +1409,8 @@ class ResilientClient:
             max_per_source=int(config.get("max_per_source", 300)),
             cache_file=cache_file or (PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None),
             external_proxies=self.external_proxies,
+            latency_budget_ms=self.config.get("latency_budget_ms"),
+            credential_store=self.credential_store,
         )
         self.max_retries = max_retries
         self.cache_ttl = cache_ttl
@@ -1438,7 +1561,12 @@ class ResilientClient:
             proxy = await self.rotator.get_proxy(
                 domain=domain, agent_id=agent_id, rotation_mode=rotation_mode
             )
-            proxy_url = proxy.url if proxy else None
+            # Rank 7: insert credentials from the credential store into the
+            # proxy URL. Track the credential used so we can mark it failed on 407.
+            proxy_url = None
+            used_credential = None  # (host, username) for 407 rotation tracking
+            if proxy:
+                proxy_url, used_credential = self.rotator.credential_store.apply(proxy.url)
 
             try:
                 start = time.time()
@@ -1466,9 +1594,21 @@ class ResilientClient:
                 if proxy:
                     proxy.mark_success(latency)
 
-                if response.status in (429, 403, 407):
+                if response.status in (429, 403):
                     if proxy:
                         await self.rotator.mark_banned(proxy)
+                    if attempt < self.max_retries - 1:
+                        wait = BACKOFF_BASE ** attempt + random.random()
+                        await asyncio.sleep(wait)
+                        continue
+
+                # Rank 7: on 407 Proxy Authentication Required, rotate
+                # credentials instead of banning the proxy immediately.
+                if response.status == 407:
+                    if proxy and used_credential:
+                        host, username = used_credential
+                        self.rotator.credential_store.mark_failed(host, username)
+                    # Rotate to next credential and retry with same proxy
                     if attempt < self.max_retries - 1:
                         wait = BACKOFF_BASE ** attempt + random.random()
                         await asyncio.sleep(wait)

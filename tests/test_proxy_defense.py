@@ -19,6 +19,8 @@ from proxy_defense import (
     CachedResponse,
     TokenBucket,
     ProxyEntry,
+    ProxyCredential,
+    CredentialStore,
     HTTPCache,
     RequestDeduplicator,
     DomainRateLimiter,
@@ -187,6 +189,135 @@ class TestProxyRotatorLatency(unittest.TestCase):
             rotator._sem = asyncio.Semaphore(1)
             proxy = await rotator.get_proxy(domain="example.com", rotation_mode="sticky")
             self.assertEqual(proxy.url, "http://fast:8080")
+
+
+
+class TestCredentialRotation(unittest.TestCase):
+    """Rank 7: credential rotation tests."""
+
+    def test_credential_is_available(self):
+        cred = ProxyCredential(username="user", password="pass", host="proxy.example.com")
+        self.assertTrue(cred.is_available())
+        cred.banned_until = time.time() + 300
+        self.assertFalse(cred.is_available())
+        cred.banned_until = 0
+        cred.fail_count = 3
+        self.assertFalse(cred.is_available())
+        cred.fail_count = 2
+        self.assertTrue(cred.is_available())
+
+    def test_credential_mark_failed_bans_after_3(self):
+        cred = ProxyCredential(username="user", password="pass", host="proxy.example.com")
+        cred.mark_failed()
+        cred.mark_failed()
+        self.assertTrue(cred.is_available())
+        cred.mark_failed()
+        self.assertFalse(cred.is_available())
+        self.assertGreater(cred.banned_until, time.time())
+
+    def test_credential_store_add_and_get(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        store.add("proxy.example.com", "user2", "pass2")
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user1", "pass1"))
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user2", "pass2"))
+        result = store.get("proxy.example.com")
+        self.assertIsNotNone(result)
+        self.assertEqual(result, ("user1", "pass1"))
+
+    def test_credential_store_no_creds_returns_none(self):
+        store = CredentialStore()
+        self.assertIsNone(store.get("unknown.example.com"))
+
+    def test_credential_store_unknown_host(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        self.assertIsNone(store.get("other.example.com"))
+
+    def test_credential_store_mark_failed_skips_banned(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        store.add("proxy.example.com", "user2", "pass2")
+        for _ in range(3):
+            store.mark_failed("proxy.example.com", "user1")
+        result = store.get("proxy.example.com")
+        self.assertEqual(result, ("user2", "pass2"))
+
+    def test_credential_store_all_banned_returns_none(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        for _ in range(3):
+            store.mark_failed("proxy.example.com", "user1")
+        self.assertIsNone(store.get("proxy.example.com"))
+
+    def test_credential_store_apply_inserts_credentials(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url, cred = store.apply("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://user1:pass1@proxy.example.com:8080")
+        self.assertEqual(cred, ("proxy.example.com", "user1"))
+
+    def test_credential_store_apply_keeps_existing_credentials(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url, cred = store.apply("http://embedded:creds@proxy.example.com:8080")
+        self.assertEqual(url, "http://embedded:creds@proxy.example.com:8080")
+        self.assertIsNone(cred)
+
+    def test_credential_store_apply_no_creds_returns_unchanged(self):
+        store = CredentialStore()
+        url, cred = store.apply("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://proxy.example.com:8080")
+        self.assertIsNone(cred)
+
+    def test_credential_store_apply_url_convenience(self):
+        store = CredentialStore()
+        store.add("proxy.example.com", "user1", "pass1")
+        url = store.apply_url("http://proxy.example.com:8080")
+        self.assertEqual(url, "http://user1:pass1@proxy.example.com:8080")
+
+    def test_rotator_get_effective_url_with_credentials(self):
+        async def run():
+            store = CredentialStore()
+            store.add("proxy.example.com", "user1", "pass1")
+            rotator = ProxyRotator(
+                proxies=[
+                    ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                               protocol="http", source="test", tier=1),
+                ],
+                use_upstream_harvester=False,
+                credential_store=store,
+            )
+            effective = rotator.get_effective_url(
+                ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                           protocol="http", source="test", tier=1)
+            )
+            self.assertEqual(effective, "http://user1:pass1@proxy.example.com:8080")
+        asyncio.run(run())
+
+    def test_rotator_get_effective_url_no_store(self):
+        rotator = ProxyRotator(
+            proxies=[],
+            use_upstream_harvester=False,
+        )
+        effective = rotator.get_effective_url(
+            ProxyEntry(url="http://proxy.example.com:8080", proxy_type="dc",
+                       protocol="http", source="test", tier=1)
+        )
+        self.assertEqual(effective, "http://proxy.example.com:8080")
+
+    def test_resilient_client_with_proxy_credentials(self):
+        client = ResilientClient(
+            auto_load_proxies=False,
+            proxy_credentials={"proxy.example.com": [("user1", "pass1"), ("user2", "pass2")]},
+        )
+        self.assertIsNotNone(client.credential_store)
+        self.assertEqual(client.credential_store.credential_count("proxy.example.com"), 2)
+        self.assertIs(client.rotator.credential_store, client.credential_store)
 
 
 class TestHTTPCache(unittest.TestCase):
