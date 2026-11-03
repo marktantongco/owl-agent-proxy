@@ -12,6 +12,7 @@ v7.1 additions (all optional, all lazy — cold import stays dependency-light):
 """
 
 import asyncio
+import os
 import sys
 import hashlib
 import json
@@ -79,6 +80,32 @@ class ProtocolUnavailable(RuntimeError):
     missing dependency, and blaming the proxy for it would ban a healthy one, so
     the retry loop re-raises this immediately.
     """
+
+
+STEALTH_ACK_ENV = "OWL_STEALTH_ACK"
+
+STEALTH_ACK_REQUIRED = (
+    "the stealth rung is an anti-bot-evasion tool: it presents a browser that "
+    "targets are meant to read as a human. Accessing a site that forbids "
+    "automated access may breach its terms of service and, depending on where "
+    "you are, the law. This project gives no compliance advice and accepts no "
+    "liability for that decision — it is yours.\n"
+    "  Acknowledge once to proceed:\n"
+    "    pass acknowledge_terms=True on the request, or\n"
+    f"    set {STEALTH_ACK_ENV}=1 in the environment."
+)
+
+
+def _stealth_acknowledged(explicit: Optional[bool] = None) -> bool:
+    """True when the caller has accepted responsibility for using this rung.
+
+    Checked on every call rather than at import: an import-time flag would be
+    decided by whoever imported the module first, which in a long-lived process
+    is not necessarily whoever makes the request.
+    """
+    if explicit is True:
+        return True
+    return os.environ.get(STEALTH_ACK_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 STEALTH_INSTALL_HINT = (
@@ -1081,6 +1108,13 @@ class ResilientClient:
         is reached only after cloudflare/akamai/datadome challenges; verified
         against the project's own protocol tests; latency is browser startup bound.
         """
+        acknowledge = kwargs.pop("acknowledge_terms", None)
+        if not _stealth_acknowledged(acknowledge):
+            raise ProtocolUnavailable(
+                f"stealth protocol requires an explicit acknowledgement — "
+                f"{STEALTH_ACK_REQUIRED}"
+            )
+
         stealth_cls = _load_stealth()
         if stealth_cls is None:
             raise ProtocolUnavailable(

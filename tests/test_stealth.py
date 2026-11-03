@@ -101,12 +101,91 @@ def test_stats_report_stealth_capability():
     assert isinstance(stats["protocols_available"]["stealth"], bool)
 
 
+# ── the acknowledgement gate ───────────────────────────────────────────────
+# Using this rung is a decision with terms-of-service and legal consequences.
+# It is not made by installing a package or by reading a README: it is made
+# explicitly, per caller, and the refusal says what is being accepted.
+
+
+@pytest.fixture
+def no_ack_env(monkeypatch):
+    """Guarantee the env var is unset so a stray value cannot pass a test."""
+    monkeypatch.delenv(pd.STEALTH_ACK_ENV, raising=False)
+    return monkeypatch
+
+
+async def test_stealth_refuses_without_acknowledgement(no_ack_env):
+    async with _client() as client:
+        with pytest.raises(pd.ProtocolUnavailable) as exc:
+            await client._request_stealth("https://example.com", None)
+
+    message = str(exc.value)
+    assert "acknowledgement" in message
+    assert "terms of service" in message
+    assert "no compliance advice" in message
+    assert "acknowledge_terms=True" in message
+    assert pd.STEALTH_ACK_ENV in message
+
+
+async def test_acknowledgement_does_not_require_an_installed_engine(no_ack_env):
+    """The refusal must not depend on the engine, or the message would be wrong."""
+    async with _client() as client:
+        with pytest.raises(pd.ProtocolUnavailable) as exc:
+            await client._request_stealth("https://example.com", None)
+    assert "not installed" not in str(exc.value)
+
+
+async def test_explicit_acknowledgement_passes_the_gate(no_ack_env, monkeypatch):
+    monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
+    async with _client() as client:
+        response = await client._request_stealth(
+            "https://example.com", None, acknowledge_terms=True)
+    assert response.protocol == "stealth"
+
+
+async def test_env_acknowledgement_passes_the_gate(no_ack_env, monkeypatch):
+    no_ack_env.setenv(pd.STEALTH_ACK_ENV, "1")
+    monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
+    async with _client() as client:
+        response = await client._request_stealth("https://example.com", None)
+    assert response.protocol == "stealth"
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "no", "random"])
+async def test_env_values_that_are_not_affirmative_do_not_pass(no_ack_env, value):
+    no_ack_env.setenv(pd.STEALTH_ACK_ENV, value)
+    async with _client() as client:
+        with pytest.raises(pd.ProtocolUnavailable, match="acknowledgement"):
+            await client._request_stealth("https://example.com", None)
+
+
+async def test_acknowledge_kwarg_is_not_leaked_to_the_engine(no_ack_env, monkeypatch):
+    """The flag is ours; the engine's constructor must never see it."""
+    monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
+    async with _client() as client:
+        await client._request_stealth(
+            "https://example.com", None, acknowledge_terms=True)
+    assert "acknowledge_terms" not in FakeStealth.instances[0].kwargs
+
+
+async def test_gate_is_checked_per_call_not_per_import(no_ack_env, monkeypatch):
+    """A long-lived process may serve callers with different intent."""
+    monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
+    async with _client() as client:
+        with pytest.raises(pd.ProtocolUnavailable):
+            await client._request_stealth("https://example.com", None)
+        # same client, same process: an acknowledged call still works
+        response = await client._request_stealth(
+            "https://example.com", None, acknowledge_terms=True)
+    assert response.protocol == "stealth"
+
+
 # ── unavailable: loud, fast, and blameless ─────────────────────────────────
 async def test_missing_engine_raises_protocol_unavailable(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: None)
     async with _client() as client:
         with pytest.raises(pd.ProtocolUnavailable) as exc:
-            await client._request_stealth("https://example.com", None)
+            await client._request_stealth("https://example.com", None, acknowledge_terms=True)
 
     message = str(exc.value)
     assert "invisible-playwright" in message
@@ -161,7 +240,7 @@ async def test_engine_receives_the_pool_proxy(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
     async with _client() as client:
         response = await client._request_stealth(
-            "https://example.com", "http://198.51.100.7:8080")
+            "https://example.com", "http://198.51.100.7:8080", acknowledge_terms=True)
 
     launch = FakeStealth.instances[0].kwargs
     assert launch["proxy"] == {"server": "http://198.51.100.7:8080"}
@@ -173,7 +252,7 @@ async def test_engine_receives_the_pool_proxy(monkeypatch):
 async def test_no_proxy_means_no_proxy_config(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
     async with _client() as client:
-        await client._request_stealth("https://example.com", None)
+        await client._request_stealth("https://example.com", None, acknowledge_terms=True)
 
     assert FakeStealth.instances[0].kwargs["proxy"] is None
 
@@ -182,7 +261,8 @@ async def test_timezone_is_passed_through_when_pinned(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
     async with _client() as client:
         await client._request_stealth(
-            "https://example.com", None, timezone="Asia/Manila", locale="en-PH")
+            "https://example.com", None, timezone="Asia/Manila", locale="en-PH",
+            acknowledge_terms=True)
 
     launch = FakeStealth.instances[0].kwargs
     assert launch["timezone"] == "Asia/Manila"
@@ -192,7 +272,7 @@ async def test_timezone_is_passed_through_when_pinned(monkeypatch):
 async def test_timezone_omitted_leaves_engine_default(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
     async with _client() as client:
-        await client._request_stealth("https://example.com", None)
+        await client._request_stealth("https://example.com", None, acknowledge_terms=True)
 
     assert "timezone" not in FakeStealth.instances[0].kwargs
 
@@ -200,7 +280,8 @@ async def test_timezone_omitted_leaves_engine_default(monkeypatch):
 async def test_page_is_closed_and_navigation_uses_timeout(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: FakeStealth)
     async with _client() as client:
-        await client._request_stealth("https://example.com", None, timeout=7)
+        await client._request_stealth("https://example.com", None, timeout=7,
+                                      acknowledge_terms=True)
 
     fake = FakeStealth.instances[0]
     assert fake.page.goto_url == "https://example.com"
@@ -223,7 +304,7 @@ async def test_navigation_failure_still_closes_the_page(monkeypatch):
     monkeypatch.setattr(pd, "_load_stealth", lambda: Boom)
     async with _client() as client:
         with pytest.raises(RuntimeError, match="ERR_TIMED_OUT"):
-            await client._request_stealth("https://example.com", None)
+            await client._request_stealth("https://example.com", None, acknowledge_terms=True)
 
     assert Boom.instances[0].page.closed is True
     assert Boom.instances[0].exited is True

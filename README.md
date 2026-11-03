@@ -352,8 +352,10 @@ resp = await client.request("GET", "https://js-heavy-site.com", protocol="browse
 
 # Last resort: stealth Firefox, fingerprint set inside the engine.
 # Optional extra, Python 3.11+, one-time `invisible-playwright fetch`.
+# Requires an explicit acknowledgement: acknowledge_terms=True or OWL_STEALTH_ACK=1.
 resp = await client.request("GET", "https://js-heavy-site.com",
-                            protocol="stealth", timezone="Asia/Manila")
+                            protocol="stealth", acknowledge_terms=True,
+                            timezone="Asia/Manila")
 ```
 
 ---

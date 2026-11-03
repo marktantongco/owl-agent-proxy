@@ -6,12 +6,12 @@ sealed Firefox is downloaded from a host that sandboxed networks block. Everythi
 up to the launch is covered by tests/test_stealth.py; this script closes the last
 gap by actually starting the engine.
 
-    python scripts/smoke-stealth.py                 # example.com, no proxy
-    python scripts/smoke-stealth.py --url https://… # a target you may access
-    python scripts/smoke-stealth.py --timezone Asia/Manila --no-proxy-check
+    python scripts/smoke-stealth.py --i-understand  # example.com, no proxy
+    python scripts/smoke-stealth.py --i-understand --url https://…  # your target
+    python scripts/smoke-stealth.py --i-understand --timezone Asia/Manila
 
 It downloads ~260 MB on first run (~550 MB unpacked) and starts a real browser.
-Exit codes: 0 verified, 1 failed, 2 not installed.
+Exit codes: 0 verified, 1 failed, 2 not installed, 3 not acknowledged.
 """
 
 from __future__ import annotations
@@ -50,7 +50,26 @@ async def run(url: str, timezone: str, use_pool: bool) -> int:
     try:
         binary = ensure_binary(status=lambda phase: print(f"          {phase}"))
     except Exception as exc:
-        return _fail(f"browser fetch failed: {type(exc).__name__}: {exc}")
+        detail = f"{type(exc).__name__}: {exc}"
+        lowered = detail.lower()
+
+        # Distinguish the two failures that look similar but need opposite fixes.
+        # A certificate error means the TLS chain is not trusted (CA problem); an
+        # EOF on the asset host means it is not reachable at all (network policy).
+        if "certificate_verify_failed" in lowered:
+            print("  hint  The TLS chain to the download host is not trusted.")
+            print("        Behind a corporate or sandbox proxy, point the fetch at")
+            print("        your CA bundle and re-run:")
+            print("          SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\")
+            print("          REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \\")
+            print("          python scripts/smoke-stealth.py --i-understand")
+        elif "release-assets" in lowered:
+            print("  hint  The release index resolved, but")
+            print("        release-assets.githubusercontent.com is unreachable.")
+            print("        That host is commonly blocked on restricted networks.")
+            print("        The install is fine; the network is not. Run this on a")
+            print("        machine with normal egress.")
+        return _fail(f"browser fetch failed: {detail}")
     print(f"  ok    engine: {binary}")
 
     # 3. drive it through the stack's own rung, not the library directly.
@@ -61,7 +80,8 @@ async def run(url: str, timezone: str, use_pool: bool) -> int:
             print(f"  ..    pool harvesting started: {started}")
         try:
             response = await client._request_stealth(
-                url, None, timezone=timezone, timeout=60)
+                url, None, timezone=timezone, timeout=60,
+                acknowledge_terms=True)   # --i-understand is the acknowledgement
         except Exception as exc:
             return _fail(f"launch/navigation failed: {type(exc).__name__}: {exc}")
 
@@ -89,9 +109,20 @@ def main() -> int:
                         help="pin the timezone to skip egress-IP discovery (recommended)")
     parser.add_argument("--no-proxy-check", action="store_true",
                         help="skip starting the upstream pool")
+    parser.add_argument("--i-understand", action="store_true",
+                        help="acknowledge responsibility for using the stealth rung")
     args = parser.parse_args()
 
     print("\n🦉 stealth rung smoke test\n")
+
+    if not args.i_understand:
+        print("  The stealth rung presents a browser that targets are meant to read")
+        print("  as a human. Using it against a site that forbids automated access may")
+        print("  breach that site's terms of service and, depending on where you are,")
+        print("  the law. This project gives no compliance advice.\n")
+        print("  Re-run with --i-understand to acknowledge that decision.\n")
+        return 3
+
     return asyncio.run(run(args.url, args.timezone, not args.no_proxy_check))
 
 
