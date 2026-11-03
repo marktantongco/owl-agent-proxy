@@ -98,14 +98,14 @@
 |------|----------------|------------|-------------|------------|----------------------|
 | Binary/service starts without errors | ✅ | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked |
 | OWL can route traffic through it | ✅ (MCP tools) | ⚠️ config ready | ⚠️ config ready | ✅ (middleware) | N/A (patterns) |
-| Test suite still passes (178+) | ✅ 387 passed | N/A | N/A | N/A | N/A |
+| Test suite still passes (178+) | ✅ 407 passed | N/A | N/A | N/A | N/A |
 | No memory exhaustion on 3.8 GB RAM | ✅ | N/A | N/A | N/A | N/A |
 | No placeholder code; working implementations | ✅ | ✅ config + WAF patterns | ✅ config + nginx camouflage patterns | ✅ middleware ported | N/A |
 
 ## Stop Conditions
 
 - No toolchain install attempted (would exceed 500 MB or be blocked by SSL)
-- OWL test suite: 387 passing (well above 178 minimum)
+- OWL test suite: 407 passing (well above 178 minimum)
 - No autologin/autoclaw, glm/z.ai, or ai-gateway-complete (all explicitly rejected)
 
 ## Files Created/Modified
@@ -115,7 +115,7 @@
 | `mcp_proxy_server.py` | Added `import subprocess`; 5 websearch-skill MCP tools (web_search, web_fetch, web_open, arxiv_search, github_search); `_run_websearch()` helper method |
 | `tests/test_mcp_server.py` | Updated tool count expectations from 7 to 12; added `TestWebSearchTools` (15 tests) |
 | `proxy_defense.py` | Added `external_proxies` param to `ProxyRotator`/`ResilientClient` (tier 1); added middleware chain (`chain()`, `RequestContext`, `Middleware`) ported from go-stealth; added WAF filter pipeline (`FilterPipeline`, `FilterRule`, `FilterAction`) ported from BounceBack; added nginx camouflage middleware (`nginx_camouflage_middleware`, `basic_auth_camouflage_middleware`) ported from https_proxy; filter + middleware integrated into `ResilientClient.request()` |
-| `tests/test_proxy_defense.py` | Added `TestExternalProxies` (5 tests), `TestMiddlewareChain` (3 tests), `TestFilterPipeline` (9 tests), `TestResilientClientMiddlewareFilter` (5 tests), `TestFilterPipelineStubs` (10 tests), `TestLLMRouting` (10 tests), `TestLLMRequestFailover` (6 tests), `TestMiddlewareIntegration` (2 tests), `TestNginxCamouflageMiddleware` (5 tests), `TestProtocolHandlers` (6 tests), `TestCLI` (1 test) |
+| `tests/test_proxy_defense.py` | Added `TestExternalProxies` (5 tests), `TestMiddlewareChain` (3 tests), `TestFilterPipeline` (9 tests), `TestResilientClientMiddlewareFilter` (5 tests), `TestFilterPipelineStubs` (10 tests), `TestLLMRouting` (10 tests), `TestLLMRequestFailover` (6 tests), `TestMiddlewareIntegration` (2 tests), `TestNginxCamouflageMiddleware` (5 tests), `TestProtocolHandlers` (6 tests), `TestProtocolHandlerSuccessPaths` (6 tests), `TestResilientClientContextManager` (5 tests), `TestProxyRotatorUpstream` (5 tests), `TestCLIStatsCommand` (3 tests), `TestCLI` (1 test) |
 | `config/external_proxies.template.json` | New — config template for BounceBack + https_proxy external proxy URLs |
 | `INTEGRATION_PLAN_5REPOS.md` | Updated with middleware/filter pattern port status per repo |
 
