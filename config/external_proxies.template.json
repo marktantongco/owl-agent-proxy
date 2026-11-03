@@ -1,0 +1,23 @@
+{
+  "external_proxies": [
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:3128"
+  ],
+  "external_proxy_notes": {
+    "bounceback": {
+      "description": "Go stealth redirector (D00Movenok/BounceBack). Reverse proxy with WAF filter pipeline.",
+      "default_port": 8080,
+      "config_file": "config.yml",
+      "status": "binary not available — GitHub releases blocked by SSL, no Go toolchain to build from source",
+      "setup": "Download linux-amd64 zip from GitHub releases, extract, run `./BounceBack -c config.yml`"
+    },
+    "https_proxy": {
+      "description": "Rust stealth HTTPS forward proxy (madeye/https_proxy). Let's Encrypt TLS, nginx camouflage, CONNECT tunneling.",
+      "default_port": 3128,
+      "config_file": "config.toml",
+      "status": "binary not available — GitHub releases blocked by SSL, no Rust toolchain to build from source",
+      "setup": "Download linux-amd64 zip from GitHub releases, extract, run `./https_proxy -c config.toml`"
+    }
+  },
+  "usage": "OWL routes traffic through external proxies at tier 1 (highest priority). Configure URLs in `external_proxies` list; OWL will attempt them before harvested free proxies."
+}

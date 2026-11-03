@@ -20,6 +20,11 @@ from proxy_defense import (
     DomainRateLimiter,
     ProxyRotator,
     ResilientClient,
+    RequestContext,
+    FilterPipeline,
+    FilterRule,
+    FilterAction,
+    chain,
 )
 
 
@@ -698,6 +703,401 @@ class TestLLMRoutingFailover(unittest.TestCase):
             self.assertEqual(result.status, 200)
             self.assertEqual(call_count, 2)
         asyncio.run(run())
+
+
+class TestExternalProxies(unittest.TestCase):
+    """Tests for external proxy (BounceBack, https_proxy) integration."""
+
+    def test_external_proxies_registered_at_tier_1(self):
+        async def run():
+            rotator = ProxyRotator(
+                proxies=[],
+                external_proxies=["http://127.0.0.1:8080", "http://127.0.0.1:3128"],
+            )
+            self.assertEqual(len(rotator.proxies), 2)
+            for p in rotator.proxies:
+                self.assertEqual(p.tier, 1)
+                self.assertEqual(p.proxy_type, "external")
+                self.assertEqual(p.source, "external_config")
+                self.assertTrue(p.validated)
+                self.assertTrue(p.healthy)
+        asyncio.run(run())
+
+    def test_external_proxies_selected_before_harvested(self):
+        async def run():
+            proxies = [
+                ProxyEntry(url="http://harvested:8080", proxy_type="free",
+                           protocol="http", source="harvest", tier=4),
+            ]
+            rotator = ProxyRotator(
+                proxies=proxies,
+                external_proxies=["http://127.0.0.1:8080"],
+            )
+            proxy = await rotator.get_proxy(domain="example.com")
+            self.assertEqual(proxy.url, "http://127.0.0.1:8080")
+            self.assertEqual(proxy.tier, 1)
+        asyncio.run(run())
+
+    def test_external_proxies_duplicate_url_not_doubled(self):
+        async def run():
+            proxies = [
+                ProxyEntry(url="http://127.0.0.1:8080", proxy_type="dc",
+                           protocol="http", source="existing", tier=1),
+            ]
+            rotator = ProxyRotator(
+                proxies=proxies,
+                external_proxies=["http://127.0.0.1:8080"],
+            )
+            # Should not add duplicate
+            urls = [p.url for p in rotator.proxies]
+            self.assertEqual(urls.count("http://127.0.0.1:8080"), 1)
+        asyncio.run(run())
+
+    def test_resilient_client_external_proxies_passed_through(self):
+        async def run():
+            client = ResilientClient(
+                external_proxies=["http://127.0.0.1:8080"],
+                auto_load_proxies=False,
+            )
+            rotator = client.rotator
+            external = [p for p in rotator.proxies if p.proxy_type == "external"]
+            self.assertEqual(len(external), 1)
+            self.assertEqual(external[0].url, "http://127.0.0.1:8080")
+            self.assertEqual(external[0].tier, 1)
+        asyncio.run(run())
+
+    def test_resilient_client_no_external_proxies_by_default(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            rotator = client.rotator
+            external = [p for p in rotator.proxies if p.proxy_type == "external"]
+            self.assertEqual(len(external), 0)
+        asyncio.run(run())
+
+
+class TestMiddlewareChain(unittest.TestCase):
+    """Tests for the go-stealth-inspired middleware chain."""
+
+    def test_chain_executes_middlewares_in_order(self):
+        order = []
+
+        async def final(ctx):
+            order.append("final")
+            return ctx.response
+
+        def mw1(handler):
+            async def wrapped(ctx):
+                order.append("m1-in")
+                result = await handler(ctx)
+                order.append("m1-out")
+                return result
+            return wrapped
+
+        def mw2(handler):
+            async def wrapped(ctx):
+                order.append("m2-in")
+                result = await handler(ctx)
+                order.append("m2-out")
+                return result
+            return wrapped
+
+        composed = chain([mw1, mw2], final)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        result = asyncio.run(composed(ctx))
+        self.assertEqual(order, ["m1-in", "m2-in", "final", "m2-out", "m1-out"])
+        self.assertIs(result, ctx.response)
+
+    def test_chain_with_no_middlewares(self):
+        async def final(ctx):
+            return ctx.response
+
+        composed = chain([], final)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1",
+                             response="cached-response")
+        result = asyncio.run(composed(ctx))
+        self.assertEqual(result, "cached-response")
+
+    def test_request_context_defaults(self):
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        self.assertEqual(ctx.agent_id, "default")
+        self.assertEqual(ctx.rotation_mode, "sticky")
+        self.assertIsNone(ctx.proxy_url)
+        self.assertIsNone(ctx.response)
+        self.assertFalse(ctx.short_circuit)
+
+
+class TestFilterPipeline(unittest.TestCase):
+    """Tests for the BounceBack-inspired WAF filter pipeline."""
+
+    def test_ip_rule_matches(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n5.6.7.8\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-ip", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "1.2.3.4"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+            self.assertEqual(name, "ban-ip")
+        finally:
+            os.unlink(tmp)
+
+    def test_ip_rule_no_match(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-ip", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "9.9.9.9"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertIsNone(action)
+            self.assertIsNone(name)
+        finally:
+            os.unlink(tmp)
+
+    def test_ip_rule_missing_list_file(self):
+        rules = [FilterRule(name="ban-ip", rule_type="ip",
+                            params={"list": "/nonexistent/file.txt"},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={"x-forwarded-for": "1.2.3.4"},
+                             protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+    def test_regexp_rule_matches(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("badword\nsensitive\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-regexp", rule_type="regexp",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com/badword-page",
+                                 params=None, headers={}, protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+        finally:
+            os.unlink(tmp)
+
+    def test_time_rule_matches(self):
+        from datetime import datetime
+        import zoneinfo
+        # Use a wide window that always matches
+        now = datetime.now(zoneinfo.ZoneInfo("UTC"))
+        from_str = f"{now.hour:02d}:{(now.minute - 5) % 60:02d}"
+        to_str = f"{now.hour:02d}:{(now.minute + 5) % 60:02d}"
+        rules = [FilterRule(name="business-hours", rule_type="time",
+                            params={"from": from_str, "to": to_str,
+                                    "timezone": "UTC"},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertEqual(action, FilterAction.REJECT)
+
+    def test_and_rule_matches_when_all_match(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp1 = f.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("badword\n")
+            tmp2 = f.name
+        try:
+            # and-rule first so it's evaluated before its component rules
+            rules = [
+                FilterRule(name="and-rule", rule_type="and",
+                           params={"rules": [
+                               {"name": "ip-rule", "type": "ip",
+                                "params": {"list": tmp1}},
+                               {"name": "regexp-rule", "type": "regexp",
+                                "params": {"list": tmp2}},
+                           ]}, action=FilterAction.REJECT),
+                FilterRule(name="ip-rule", rule_type="ip",
+                           params={"list": tmp1}, action=FilterAction.REJECT),
+                FilterRule(name="regexp-rule", rule_type="regexp",
+                           params={"list": tmp2}, action=FilterAction.REJECT),
+            ]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com/badword",
+                                 params=None, headers={"x-forwarded-for": "1.2.3.4"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+            self.assertEqual(name, "and-rule")
+        finally:
+            os.unlink(tmp1)
+            os.unlink(tmp2)
+
+    def test_and_rule_no_match_when_any_fails(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp = f.name
+        try:
+            rules = [
+                FilterRule(name="and-rule", rule_type="and",
+                           params={"rules": [
+                               {"name": "ip-rule", "type": "ip",
+                                "params": {"list": tmp}},
+                               {"name": "regexp-rule", "type": "regexp",
+                                "params": {"list": "/nonexistent.txt"}},
+                           ]}, action=FilterAction.REJECT),
+                FilterRule(name="ip-rule", rule_type="ip",
+                           params={"list": tmp}, action=FilterAction.REJECT),
+            ]
+            pipeline = FilterPipeline(rules)
+            # IP 9.9.9.9 not in list → ip-rule doesn't match standalone
+            # and-rule: ip condition fails → and doesn't match
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "9.9.9.9"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertIsNone(action)
+        finally:
+            os.unlink(tmp)
+
+    def test_or_rule_matches_when_any_matches(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("badword\n")
+            tmp2 = f.name
+        try:
+            # or-rule first so it's evaluated before its component rules
+            rules = [
+                FilterRule(name="or-rule", rule_type="or",
+                           params={"rules": [
+                               {"name": "ip-rule", "type": "ip",
+                                "params": {"list": "/nonexistent.txt"}},
+                               {"name": "regexp-rule", "type": "regexp",
+                                "params": {"list": tmp2}},
+                           ]}, action=FilterAction.REJECT),
+                FilterRule(name="regexp-rule", rule_type="regexp",
+                           params={"list": tmp2}, action=FilterAction.REJECT),
+            ]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com/badword",
+                                 params=None, headers={}, protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+            self.assertEqual(name, "or-rule")
+        finally:
+            os.unlink(tmp2)
+
+    def test_not_rule_inverts(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp = f.name
+        try:
+            # not-rule comes first so it's evaluated before ip-rule
+            rules = [
+                FilterRule(name="not-rule", rule_type="not",
+                           params={"rule": "ip-rule"}, action=FilterAction.ACCEPT),
+                FilterRule(name="ip-rule", rule_type="ip",
+                           params={"list": tmp}, action=FilterAction.REJECT),
+            ]
+            pipeline = FilterPipeline(rules)
+            # IP matches → not rule inverts → no match from not rule
+            # → falls through to ip-rule → REJECT
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "1.2.3.4"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+            self.assertEqual(name, "ip-rule")
+
+            # IP doesn't match → not rule inverts → matches with ACCEPT
+            ctx2 = RequestContext(method="GET", url="http://example.com",
+                                  params=None, headers={"x-forwarded-for": "9.9.9.9"},
+                                  protocol="http/1.1")
+            action2, name2 = pipeline.evaluate(ctx2)
+            self.assertEqual(action2, FilterAction.ACCEPT)
+            self.assertEqual(name2, "not-rule")
+        finally:
+            os.unlink(tmp)
+
+    def test_first_matching_rule_wins(self):
+        rules = [
+            FilterRule(name="first-reject", rule_type="regexp",
+                       params={"list": "/nonexistent.txt"}, action=FilterAction.REJECT),
+            FilterRule(name="second-accept", rule_type="regexp",
+                       params={"list": "/nonexistent.txt"}, action=FilterAction.ACCEPT),
+        ]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        # Neither matches since list files don't exist
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+
+class TestResilientClientMiddlewareFilter(unittest.TestCase):
+    """Tests for middleware + filter pipeline on ResilientClient."""
+
+    def test_filter_pipeline_rejects_request(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-ip", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            client = ResilientClient(
+                auto_load_proxies=False,
+                filter_rules=rules,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "1.2.3.4"},
+                                 protocol="http/1.1")
+            # Directly test filter pipeline evaluation
+            action, name = client.filter_pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+        finally:
+            os.unlink(tmp)
+
+    def test_middleware_chain_wraps_factory(self):
+        calls = []
+
+        async def mw(handler):
+            async def wrapped(ctx):
+                calls.append("middleware")
+                return await handler(ctx)
+            return wrapped
+
+        client = ResilientClient(
+            auto_load_proxies=False,
+            middleware=[mw],
+        )
+        self.assertEqual(len(client.middleware), 1)
+
+    def test_resilient_client_no_middleware_by_default(self):
+        client = ResilientClient(auto_load_proxies=False)
+        self.assertEqual(len(client.middleware), 0)
+
+    def test_filter_rule_accept_action(self):
+        rule = FilterRule(name="allow-all", rule_type="ip",
+                          params={"list": "/nonexistent.txt"},
+                          action=FilterAction.ACCEPT)
+        self.assertEqual(rule.action, FilterAction.ACCEPT)
+        self.assertEqual(rule.name, "allow-all")
 
 
 if __name__ == "__main__":
