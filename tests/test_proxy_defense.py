@@ -31,6 +31,7 @@ from proxy_defense import (
     FilterRule,
     FilterAction,
     TOKEN_BUCKET_PERSIST_FILE,
+    validate_config,
     chain,
     nginx_camouflage_middleware,
     basic_auth_camouflage_middleware,
@@ -1114,6 +1115,98 @@ class TestResilientClientLifecycle(unittest.TestCase):
         )
         self.assertEqual(client.cache.max_entries, 500)
         self.assertEqual(client.dedup.max_in_flight, 100)
+
+
+class TestConfigSchema(unittest.TestCase):
+    """Rank 10: config schema validation tests."""
+
+    def test_validate_config_empty(self):
+        errors = validate_config({})
+        self.assertEqual(errors, [])
+
+    def test_validate_config_all_valid(self):
+        config = {
+            "cache_ttl": 300,
+            "rate_limit": 1.5,
+            "max_retries": 3,
+            "cache_max_entries": 10000,
+            "dedup_max_in_flight": 1000,
+            "token_bucket_persist_file": "/tmp/buckets.json",
+            "use_upstream_harvester": True,
+            "session_ttl": 900.0,
+            "harvest_interval": 600.0,
+            "honeypot_check": True,
+            "max_proxies": 2000,
+            "external_proxies": ["http://127.0.0.1:8080"],
+            "proxy_credentials": {"proxy.example.com": [("user", "pass")]},
+            "middleware": [],
+            "filter_rules": [],
+            "validator_concurrency": 10,
+            "validator_timeout": 8.0,
+            "max_per_source": 300,
+            "persist_proxy_cache": True,
+            "latency_budget_ms": 500.0,
+            "local_model_upstreams": {"colibri": {"name": "colibri"}},
+        }
+        errors = validate_config(config)
+        self.assertEqual(errors, [])
+
+    def test_validate_config_wrong_type(self):
+        errors = validate_config({"cache_ttl": "300"})
+        self.assertTrue(any("cache_ttl" in e for e in errors))
+        self.assertTrue(any("int" in e and "str" in e for e in errors))
+
+    def test_validate_config_below_min(self):
+        errors = validate_config({"cache_ttl": 0})
+        self.assertTrue(any("cache_ttl" in e and "minimum" in e for e in errors))
+
+    def test_validate_config_negative_rate_limit(self):
+        errors = validate_config({"rate_limit": -1.0})
+        self.assertTrue(any("rate_limit" in e for e in errors))
+
+    def test_validate_config_list_wrong_item_type(self):
+        errors = validate_config({"external_proxies": [123, "http://ok"]})
+        self.assertTrue(any("external_proxies" in e for e in errors))
+
+    def test_validate_config_dict_wrong_value_type(self):
+        errors = validate_config({"proxy_credentials": {"host": "not-a-list"}})
+        self.assertTrue(any("proxy_credentials" in e for e in errors))
+
+    def test_validate_config_unknown_key_warning(self):
+        # Unknown keys are warnings, not errors
+        errors = validate_config({"unknown_key": "value"})
+        self.assertEqual(errors, [])
+
+    def test_validate_config_not_dict(self):
+        errors = validate_config("not a dict")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("dict", errors[0])
+
+    def test_validate_config_list_item_wrong_type(self):
+        errors = validate_config({"filter_rules": ["not-a-dict"]})
+        self.assertTrue(any("filter_rules" in e for e in errors))
+
+    def test_read_config_invalid_values_logged(self):
+        import tempfile, os
+        config_path = Path(tempfile.mkdtemp()) / "config.json"
+        config_path.write_text(json.dumps({"cache_ttl": "not-an-int"}))
+        client = ResilientClient.__new__(ResilientClient)
+        with self.assertLogs("owl-agent.proxy", level="WARNING") as log:
+            result = client._read_config(config_path)
+        # Should still return the config (invalid values are warnings, not fatal)
+        self.assertEqual(result, {"cache_ttl": "not-an-int"})
+        # Warning should have been logged
+        assert any("cache_ttl" in msg for msg in log.output)
+
+    def test_read_config_non_dict_top_level(self):
+        import tempfile
+        config_path = Path(tempfile.mkdtemp()) / "config.json"
+        config_path.write_text(json.dumps([1, 2, 3]))
+        client = ResilientClient.__new__(ResilientClient)
+        with self.assertLogs("owl-agent.proxy", level="WARNING") as log:
+            result = client._read_config(config_path)
+        self.assertEqual(result, {})
+        assert any("top-level" in msg for msg in log.output)
 
 
 class TestProxyRotatorCacheRoundtrip(unittest.TestCase):

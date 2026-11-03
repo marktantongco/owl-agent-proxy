@@ -160,6 +160,103 @@ BACKOFF_BASE = 1.5
 TOKEN_BUCKET_SAVE_EVERY_N_ACQUIRES = 10  # debounced: persist after N acquires
 TOKEN_BUCKET_PERSIST_FILE = CONFIG_DIR / "token_buckets.json"
 
+# ── Rank 10: config schema validation ────────────────────────────────
+# Schema for config.json keys. Each entry specifies the expected type and
+# optional constraints. Unknown keys are logged as warnings but not errors
+# (forward compatibility). Invalid values for known keys are errors.
+#
+# ``type``        - expected Python type (or tuple of acceptable types)
+# ``min``         - minimum value (for numeric types)
+# ``item_type``   - type of list items (for list types)
+# ``value_type``  - type of dict values (for dict types)
+# ``item_schema`` - schema dict for list items (for list of dicts)
+CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = {
+    "cache_ttl":                    {"type": int, "min": 1},
+    "rate_limit":                   {"type": (int, float), "min": 0.001},
+    "max_retries":                  {"type": int, "min": 0},
+    "cache_max_entries":            {"type": int, "min": 1},
+    "dedup_max_in_flight":          {"type": int, "min": 1},
+    "token_bucket_persist_file":    {"type": str},
+    "use_upstream_harvester":       {"type": bool},
+    "session_ttl":                  {"type": (int, float), "min": 1},
+    "harvest_interval":             {"type": (int, float), "min": 1},
+    "honeypot_check":               {"type": bool},
+    "max_proxies":                  {"type": int, "min": 1},
+    "external_proxies":             {"type": list, "item_type": str},
+    "proxy_credentials":            {"type": dict, "value_type": list},
+    "middleware":                   {"type": list},
+    "filter_rules":                 {"type": list, "item_type": dict},
+    "validator_concurrency":        {"type": int, "min": 1},
+    "validator_timeout":            {"type": (int, float), "min": 0.1},
+    "max_per_source":               {"type": int, "min": 1},
+    "persist_proxy_cache":          {"type": bool},
+    "latency_budget_ms":            {"type": (int, float), "min": 0},
+    "local_model_upstreams":        {"type": dict, "value_type": dict},
+}
+
+
+def validate_config(config: Dict[str, Any]) -> List[str]:
+    """Validate a config dict against ``CONFIG_SCHEMA``.
+
+    Returns a list of human-readable error messages. An empty list means
+    the config is valid. Unknown keys produce warnings (not errors) for
+    forward compatibility.
+
+    Validation rules:
+    * ``type`` mismatch → error
+    * ``min`` violation (numeric below minimum) → error
+    * ``item_type`` mismatch (list item wrong type) → error
+    * ``value_type`` mismatch (dict value wrong type) → error
+    """
+    errors: List[str] = []
+    if not isinstance(config, dict):
+        return ["config must be a JSON object (dict)"]
+
+    for key, value in config.items():
+        if key not in CONFIG_SCHEMA:
+            logger.warning(f"config: unknown key '{key}' — ignoring")
+            continue
+
+        spec = CONFIG_SCHEMA[key]
+        expected_type = spec.get("type")
+
+        # Type check
+        if expected_type is not None and not isinstance(value, expected_type):
+            errors.append(
+                f"config.{key}: expected {expected_type.__name__ if isinstance(expected_type, type) else expected_type}, "
+                f"got {type(value).__name__}"
+            )
+            continue  # can't check constraints on wrong type
+
+        # Numeric minimum check
+        if "min" in spec and isinstance(value, (int, float)):
+            if value < spec["min"]:
+                errors.append(
+                    f"config.{key}: value {value} below minimum {spec['min']}"
+                )
+
+        # List item type check
+        if isinstance(value, list) and "item_type" in spec:
+            item_type = spec["item_type"]
+            for i, item in enumerate(value):
+                if not isinstance(item, item_type):
+                    errors.append(
+                        f"config.{key}[{i}]: expected {item_type.__name__}, "
+                        f"got {type(item).__name__}"
+                    )
+
+        # Dict value type check
+        if isinstance(value, dict) and "value_type" in spec:
+            value_type = spec["value_type"]
+            for k, v in value.items():
+                if not isinstance(v, value_type):
+                    errors.append(
+                        f"config.{key}.{k}: expected {value_type.__name__}, "
+                        f"got {type(v).__name__}"
+                    )
+
+    return errors
+
 # OpenAI-compatible API paths that OWL intercepts and routes through local
 # model upstreams (colibri primary, FreeRide failover) instead of the proxy pool.
 LLM_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/models", "/v1/embeddings")
@@ -1554,10 +1651,17 @@ class ResilientClient:
         try:
             with open(path) as handle:
                 data = json.load(handle)
-            return data if isinstance(data, dict) else {}
         except Exception as exc:
             logger.warning(f"config load failed ({path}): {exc}")
             return {}
+        if not isinstance(data, dict):
+            logger.warning(f"config: top-level must be a JSON object, got {type(data).__name__}")
+            return {}
+        # Rank 10: validate config against schema
+        errors = validate_config(data)
+        for err in errors:
+            logger.warning(f"config: {err}")
+        return data
 
     async def __aenter__(self):
         self._session = _require_aiohttp().ClientSession()
