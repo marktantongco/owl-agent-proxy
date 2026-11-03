@@ -14,6 +14,7 @@ v7.1 additions (all optional, all lazy — cold import stays dependency-light):
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import sys
 import hashlib
@@ -22,7 +23,7 @@ import time
 import random
 import importlib.util
 import logging
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, deque, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
@@ -155,6 +156,10 @@ DEFAULT_RATE = 1.0
 MAX_RETRIES = 3
 BACKOFF_BASE = 1.5
 
+# Rank 9: token-bucket persistence defaults
+TOKEN_BUCKET_SAVE_EVERY_N_ACQUIRES = 10  # debounced: persist after N acquires
+TOKEN_BUCKET_PERSIST_FILE = CONFIG_DIR / "token_buckets.json"
+
 # OpenAI-compatible API paths that OWL intercepts and routes through local
 # model upstreams (colibri primary, FreeRide failover) instead of the proxy pool.
 LLM_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/models", "/v1/embeddings")
@@ -221,6 +226,34 @@ class TokenBucket:
     tokens: float = 0.0
     last_update: float = field(default_factory=time.time)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    # Rank 9: persistence
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize mutable state (tokens, last_update) for persistence.
+
+        ``rate`` and ``capacity`` are configuration, not state — they come
+        from the constructor and are not saved here.
+        """
+        return {
+            "tokens": self.tokens,
+            "last_update": self.last_update,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, rate: float, capacity: float, data: Dict[str, Any]
+    ) -> "TokenBucket":
+        """Restore mutable state from a persisted dict.
+
+        ``rate`` and ``capacity`` are passed separately since they are
+        configuration, not persisted state.
+        """
+        return cls(
+            rate=rate,
+            capacity=capacity,
+            tokens=float(data.get("tokens", capacity)),
+            last_update=float(data.get("last_update", time.time())),
+        )
 
     async def _replenish(self):
         now = time.time()
@@ -510,6 +543,119 @@ def basic_auth_camouflage_middleware(
     return mw
 
 
+# ── Rank 7: credential rotation ─────────────────────────────────────────
+
+@dataclass
+class ProxyCredential:
+    """One set of proxy authentication credentials for a given host.
+
+    Multiple credentials can be registered per host; the CredentialStore
+    rotates through them round-robin, skipping banned or exhausted ones.
+    """
+    username: str
+    password: str
+    host: str
+    fail_count: int = 0
+    banned_until: float = 0.0
+    last_used: float = 0.0
+
+    def is_available(self) -> bool:
+        return time.time() >= self.banned_until and self.fail_count < 3
+
+    def mark_failed(self):
+        self.fail_count += 1
+        if self.fail_count >= 3:
+            self.banned_until = time.time() + 300
+            logger.warning(f"Proxy credential banned: {self.username}@{self.host}")
+
+
+class CredentialStore:
+    """Round-robin credential store per proxy host.
+
+    Holds multiple (username, password) sets per proxy host and hands out
+    the next available one on each request. When a credential receives a
+    407 Proxy Authentication Required, it is marked failed; after 3 failures
+    it is banned for 300 seconds. If all credentials for a host are
+    unavailable, returns None (caller falls back to credential-less proxy).
+    """
+
+    def __init__(self):
+        # host -> list of ProxyCredential
+        self._creds: Dict[str, List[ProxyCredential]] = defaultdict(list)
+        # host -> next rotation index
+        self._index: Dict[str, int] = {}
+
+    def add(self, host: str, username: str, password: str) -> None:
+        """Register a credential set for ``host``."""
+        self._creds[host].append(
+            ProxyCredential(username=username, password=password, host=host)
+        )
+
+    def get(self, host: str) -> Optional[Tuple[str, str]]:
+        """Return the next available (username, password) for ``host``.
+
+        Rotates round-robin, skipping banned/exhausted credentials. Returns
+        None when no credential is available for the host.
+        """
+        creds = self._creds.get(host)
+        if not creds:
+            return None
+        n = len(creds)
+        idx = self._index.get(host, 0) % n
+        attempts = 0
+        while attempts < n:
+            cred = creds[idx]
+            if cred.is_available():
+                self._index[host] = (idx + 1) % n
+                cred.last_used = time.time()
+                return (cred.username, cred.password)
+            idx = (idx + 1) % n
+            attempts += 1
+        return None
+
+    def mark_failed(self, host: str, username: str) -> None:
+        """Mark a credential as failed (e.g., 407 Proxy Auth Required)."""
+        for cred in self._creds.get(host, []):
+            if cred.username == username:
+                cred.mark_failed()
+                break
+
+    def hosts(self) -> List[str]:
+        return list(self._creds.keys())
+
+    def credential_count(self, host: str) -> int:
+        return len(self._creds.get(host, []))
+
+    def apply(self, proxy_url: str) -> Tuple[str, Optional[Tuple[str, str]]]:
+        """Insert the next available credential into ``proxy_url``.
+
+        Returns ``(effective_url, credential)`` where ``credential`` is
+        ``(username, password)`` if one was applied, or ``None`` otherwise.
+        If the URL already has embedded credentials, or no credential is
+        available for the host, the URL is returned unchanged with
+        ``credential=None``.
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(proxy_url)
+        if parsed.username:
+            return proxy_url, None
+        host = parsed.hostname or ""
+        creds = self.get(host)
+        if creds is None:
+            return proxy_url, None
+        username, password = creds
+        netloc = f"{username}:{password}@{parsed.hostname}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        effective = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        return effective, (host, username)
+
+    def apply_url(self, proxy_url: str) -> str:
+        """Convenience: return only the effective URL from ``apply()``."""
+        return self.apply(proxy_url)[0]
+
+
 @dataclass
 class ProxyEntry:
     url: str
@@ -526,6 +672,8 @@ class ProxyEntry:
     # succeeds, so a stale upstream list never reaches the request path.
     validated: bool = True
     added_at: float = field(default_factory=time.time)
+    # Rank 6: rolling window of recent successful latencies for P99 computation.
+    latency_history: deque = field(default_factory=lambda: deque(maxlen=50))
 
     def is_banned(self) -> bool:
         return time.time() < self.ban_until
@@ -542,7 +690,25 @@ class ProxyEntry:
         self.healthy = True
         self.validated = True
         self.latency_ms = latency_ms
+        self.latency_history.append(latency_ms)
         self.last_check = time.time()
+
+    @property
+    def p99_latency_ms(self) -> float:
+        """99th-percentile latency over the recent success history.
+
+        Falls back to ``latency_ms`` (the last measurement) when no history
+        exists yet. With few samples this returns the max observed value,
+        which is conservative: a single slow measurement keeps P99 high until
+        more samples dilute it.
+        """
+        if not self.latency_history:
+            return self.latency_ms
+        ordered = sorted(self.latency_history)
+        n = len(ordered)
+        # Nearest-rank P99: index = ceil(0.99 * n) - 1, clamped to [0, n-1]
+        idx = max(0, min(n - 1, math.ceil(0.99 * n) - 1))
+        return ordered[idx]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -557,12 +723,13 @@ class ProxyEntry:
             "fail_count": self.fail_count,
             "ban_until": self.ban_until,
             "latency_ms": self.latency_ms,
+            "latency_history": list(self.latency_history),
             "added_at": self.added_at,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProxyEntry":
-        return cls(
+        entry = cls(
             url=data["url"],
             proxy_type=data.get("proxy_type", "free"),
             protocol=data.get("protocol", "http"),
@@ -576,6 +743,11 @@ class ProxyEntry:
             validated=bool(data.get("validated", False)),
             added_at=float(data.get("added_at", time.time())),
         )
+        # Restore rolling history if present (older cache files won't have it)
+        history = data.get("latency_history")
+        if isinstance(history, list):
+            entry.latency_history = deque(history, maxlen=50)
+        return entry
 
 
 class ProxyPoolLoader:
@@ -683,14 +855,80 @@ class RequestDeduplicator:
 
 
 class DomainRateLimiter:
-    def __init__(self, default_rate: float = DEFAULT_RATE, default_capacity: float = 5.0):
+    def __init__(
+        self,
+        default_rate: float = DEFAULT_RATE,
+        default_capacity: float = 5.0,
+        persist_file: Optional[Path] = None,
+    ):
         self.default_rate = default_rate
         self.default_capacity = default_capacity
+        self.persist_file = persist_file
         self._buckets: Dict[str, TokenBucket] = {}
         self._lock = asyncio.Lock()
+        # Rank 9: dirty domains whose state changed since last save
+        self._dirty: set = set()
+        self._acquire_count = 0
 
     def _extract_domain(self, url: str) -> str:
         return urlparse(url).netloc or urlparse(url).path
+
+    # ── Rank 9: persistence ──────────────────────────────────────────
+    def load_state(self) -> None:
+        """Load persisted token-bucket state from ``persist_file``.
+
+        Safe to call multiple times; already-loaded domains are not
+        overwritten (in-memory state takes precedence).
+        """
+        if self.persist_file is None or not self.persist_file.exists():
+            return
+        try:
+            data = json.loads(self.persist_file.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Failed to load token bucket state: {e}")
+            return
+        for domain, state in data.items():
+            if domain in self._buckets:
+                continue  # in-memory state takes precedence
+            self._buckets[domain] = TokenBucket.from_dict(
+                self.default_rate,
+                self.default_capacity,
+                state,
+            )
+
+    def save_state(self) -> None:
+        """Persist all dirty token-bucket state to ``persist_file``."""
+        if self.persist_file is None or not self._dirty:
+            return
+        # Build full state: all buckets, not just dirty ones (simpler and
+        # more robust — a fresh load gets every domain's last-known state).
+        state: Dict[str, Dict[str, Any]] = {}
+        for domain, bucket in self._buckets.items():
+            state[domain] = bucket.to_dict()
+        try:
+            self.persist_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(self.persist_file) + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, self.persist_file)
+            self._dirty.clear()
+        except OSError as e:
+            logger.warning(f"Failed to save token bucket state: {e}")
+
+    def _mark_dirty(self, domain: str) -> None:
+        self._dirty.add(domain)
+        self._acquire_count += 1
+        # Debounced save: persist every N acquires
+        if self.persist_file is not None and self._acquire_count >= TOKEN_BUCKET_SAVE_EVERY_N_ACQUIRES:
+            self.save_state()
+            self._acquire_count = 0
+
+    def close(self) -> None:
+        """Final persist before shutdown."""
+        if self.persist_file is not None:
+            self.save_state()
+
+    # ─────────────────────────────────────────────────────────────────
 
     async def acquire(self, url: str, tokens: float = 1.0):
         domain = self._extract_domain(url)
@@ -698,6 +936,7 @@ class DomainRateLimiter:
             if domain not in self._buckets:
                 self._buckets[domain] = TokenBucket(rate=self.default_rate, capacity=self.default_capacity, tokens=self.default_capacity)
         await self._buckets[domain].acquire(tokens)
+        self._mark_dirty(domain)
 
 
 @runtime_checkable
@@ -911,6 +1150,7 @@ class UpstreamHarvestingMixin:
             "honeypot_rejections": self._rejected,
             "unvalidated": sum(1 for p in self.proxies if not p.validated),
             "pending_validation": self._validation_queue.qsize(),
+            "latency_budget_ms": getattr(self, "latency_budget_ms", None),
             "sources": self.source_health(),
         }
 
@@ -918,18 +1158,10 @@ class UpstreamHarvestingMixin:
 class ProxyRotator(UpstreamHarvestingMixin):
     """Tier-sorted proxy pool with optional v7.1 upstream harvesting.
 
-    Selection order is tier then latency. When a domain is supplied and
-    ``rotation_mode="sticky"``, a binding from ``SessionAffinityManager`` wins —
-    that is what keeps an agent on one exit IP for the life of a task.
-
-    Upstream harvesting is opt-in (``use_upstream_harvester=True``). Harvested
-    entries enter the pool at tier 4 with ``healthy=False`` and are only promoted
-    after a real probe, so a stale list cannot poison the request path.
-
-    External proxies (BounceBack stealth redirector, https_proxy forward proxy)
-    are configured via ``external_proxies`` — a list of proxy URL strings. They
-    enter the pool at tier 1 (highest priority) so explicitly configured stealth
-    egress takes precedence over harvested free proxies.
+    Selection order is tier then P99 latency. Sticky bindings keep an agent
+    on one exit IP. Harvested entries enter at tier 4 (unvalidated) until a
+    probe succeeds. External proxies enter at tier 1 via the validation pipeline.
+    Rank 6: P99 latency + optional latency budget. Rank 7: credential rotation.
     """
 
     def __init__(
@@ -946,6 +1178,8 @@ class ProxyRotator(UpstreamHarvestingMixin):
         max_per_source: int = 300,
         cache_file: Optional[Path] = None,
         external_proxies: Optional[List[str]] = None,
+        latency_budget_ms: Optional[float] = None,
+        credential_store: Optional[CredentialStore] = None,
     ):
         self.proxies: List[ProxyEntry] = proxies or []
         self._current_index = 0
@@ -961,14 +1195,21 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.validator_timeout = validator_timeout
         self.max_per_source = max_per_source
         self.cache_file = cache_file
+        self.latency_budget_ms = latency_budget_ms
         self.external_proxies: List[str] = external_proxies or []
+        self.credential_store: CredentialStore = credential_store or CredentialStore()
         self._urls: set = set()
+        self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         # Seed _urls from initial proxies so duplicate detection works
         # for external proxies that may already exist in the pool.
         for proxy in self.proxies:
             self._remember(proxy)
 
         # Register external proxies (BounceBack, https_proxy) at tier 1.
+        # They start unvalidated and enter the same validation pipeline as
+        # harvested proxies (TCP/HTTP probe + honeypot check). Tier 1 priority
+        # only applies once they pass validation; until then they are not
+        # returned by get_proxy() and do not bypass health checking.
         for url in self.external_proxies:
             if url in self._urls:
                 continue
@@ -978,12 +1219,18 @@ class ProxyRotator(UpstreamHarvestingMixin):
                 protocol="http",
                 source="external_config",
                 tier=1,
-                healthy=True,
-                validated=True,
-                latency_ms=0.0,
+                healthy=False,
+                validated=False,
+                latency_ms=9999.0,
             )
             self.proxies.append(entry)
             self._remember(entry)
+            # Enqueue for validation if the validation loop is running;
+            # otherwise the entry waits until start_upstream() is called.
+            try:
+                self._validation_queue.put_nowait(url)
+            except Exception:
+                pass
 
         self._affinity = None          # SessionAffinityManager (lazy)
         self._harvester = None         # UpstreamHarvester (lazy)
@@ -991,7 +1238,6 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self._harvest_task: Optional[asyncio.Task] = None
         self._validation_task: Optional[asyncio.Task] = None
         self._validation_tasks: set = set()
-        self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         self._sem: Optional[asyncio.Semaphore] = None
         self._harvested = 0
         self._rejected = 0
@@ -1017,7 +1263,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         keep = sorted(
             self.proxies,
             key=lambda p: (p.tier == 1, p.validated, p.healthy,
-                           -p.latency_ms, p.added_at),
+                           -p.p99_latency_ms, p.added_at),
             reverse=True,
         )[: self.max_proxies]
         keep_ids = {id(p) for p in keep}
@@ -1077,6 +1323,9 @@ class ProxyRotator(UpstreamHarvestingMixin):
     def healthy_entries(self) -> List[ProxyEntry]:
         return [p for p in self.proxies if p.healthy and not p.is_banned()]
 
+    def get_effective_url(self, proxy: ProxyEntry) -> str:
+        return self.credential_store.apply_url(proxy.url)
+
     async def get_proxy(
         self,
         domain: Optional[str] = None,
@@ -1104,7 +1353,15 @@ class ProxyRotator(UpstreamHarvestingMixin):
             if mode == "random":
                 proxy = random.choice(candidates)
             else:
-                candidates.sort(key=lambda p: (p.tier, p.latency_ms))
+                # Rank 6: sort by P99 latency instead of last raw measurement.
+                # Apply latency budget when configured (fail-open: if every
+                # candidate exceeds the budget, fall back to all candidates).
+                budget = self.latency_budget_ms
+                if budget is not None:
+                    within_budget = [p for p in candidates
+                                     if p.p99_latency_ms <= budget]
+                    candidates = within_budget or candidates
+                candidates.sort(key=lambda p: (p.tier, p.p99_latency_ms))
                 proxy = candidates[self._current_index % len(candidates)]
                 self._current_index += 1
 
@@ -1176,6 +1433,8 @@ class ResilientClient:
         config_path: Optional[Union[str, Path]] = None,
         pool: Optional[PoolBackend] = None,
         cache_file: Optional[Path] = None,
+        proxy_credentials: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+        token_bucket_persist_file: Optional[Path] = None,
     ):
         config = self._read_config(config_path)
         self.config = config
@@ -1201,7 +1460,16 @@ class ResilientClient:
 
         self.cache = HTTPCache(ttl=cache_ttl, max_entries=cache_max_entries)
         self.dedup = RequestDeduplicator(max_in_flight=dedup_max_in_flight)
-        self.limiter = DomainRateLimiter(default_rate=rate_limit)
+        # Rank 9: token-bucket persistence
+        resolved_persist_file = token_bucket_persist_file or config.get(
+            "token_bucket_persist_file", TOKEN_BUCKET_PERSIST_FILE
+        )
+        self.limiter = DomainRateLimiter(
+            default_rate=rate_limit,
+            persist_file=Path(resolved_persist_file) if resolved_persist_file else None,
+        )
+        # Load persisted bucket state (if any) so rate limits survive restart
+        self.limiter.load_state()
         self.use_upstream_harvester = bool(pick(use_upstream_harvester, "use_upstream_harvester", False))
         self.session_ttl = float(pick(session_ttl, "session_ttl", DEFAULT_SESSION_TTL))
         self.harvest_interval = float(pick(harvest_interval, "harvest_interval", DEFAULT_HARVEST_INTERVAL))
@@ -1212,6 +1480,16 @@ class ResilientClient:
         # constructor parameter if provided.
         config_external = config.get("external_proxies", [])
         self.external_proxies: List[str] = list(external_proxies or config_external or [])
+
+        # Rank 7: credential store for proxy authentication rotation.
+        # Credentials can be provided via constructor or config.json
+        # `proxy_credentials` (mapping host -> [(username, password), ...]).
+        config_creds = config.get("proxy_credentials", {})
+        resolved_creds: Dict[str, List[Tuple[str, str]]] = proxy_credentials or config_creds or {}
+        self.credential_store: CredentialStore = CredentialStore()
+        for host, cred_list in resolved_creds.items():
+            for username, password in cred_list:
+                self.credential_store.add(host, username, password)
         # v7.3: middleware chain (go-stealth pattern) + WAF filter pipeline
         # (BounceBack pattern). Read from config.json or constructor params.
         self.middleware: List[Middleware] = list(middleware or config.get("middleware", []) or [])
@@ -1240,6 +1518,8 @@ class ResilientClient:
             max_per_source=int(config.get("max_per_source", 300)),
             cache_file=cache_file or (PROXY_CACHE_FILE if config.get("persist_proxy_cache", True) else None),
             external_proxies=self.external_proxies,
+            latency_budget_ms=self.config.get("latency_budget_ms"),
+            credential_store=self.credential_store,
         )
         self.max_retries = max_retries
         self.cache_ttl = cache_ttl
@@ -1261,6 +1541,10 @@ class ResilientClient:
         self._httpx_client = None
         self._httpx_proxied: Dict[str, Any] = {}
         self._curl_session: Optional[AsyncCurlSession] = None
+
+    def close(self) -> None:
+        """Final persist of token-bucket state before shutdown."""
+        self.limiter.close()
 
     @staticmethod
     def _read_config(config_path: Optional[Union[str, Path]]) -> Dict[str, Any]:
@@ -1390,7 +1674,12 @@ class ResilientClient:
             proxy = await self.rotator.get_proxy(
                 domain=domain, agent_id=agent_id, rotation_mode=rotation_mode
             )
-            proxy_url = proxy.url if proxy else None
+            # Rank 7: insert credentials from the credential store into the
+            # proxy URL. Track the credential used so we can mark it failed on 407.
+            proxy_url = None
+            used_credential = None  # (host, username) for 407 rotation tracking
+            if proxy:
+                proxy_url, used_credential = self.rotator.credential_store.apply(proxy.url)
 
             try:
                 start = time.time()
@@ -1418,9 +1707,21 @@ class ResilientClient:
                 if proxy:
                     proxy.mark_success(latency)
 
-                if response.status in (429, 403, 407):
+                if response.status in (429, 403):
                     if proxy:
                         await self.rotator.mark_banned(proxy)
+                    if attempt < self.max_retries - 1:
+                        wait = BACKOFF_BASE ** attempt + random.random()
+                        await asyncio.sleep(wait)
+                        continue
+
+                # Rank 7: on 407 Proxy Authentication Required, rotate
+                # credentials instead of banning the proxy immediately.
+                if response.status == 407:
+                    if proxy and used_credential:
+                        host, username = used_credential
+                        self.rotator.credential_store.mark_failed(host, username)
+                    # Rotate to next credential and retry with same proxy
                     if attempt < self.max_retries - 1:
                         wait = BACKOFF_BASE ** attempt + random.random()
                         await asyncio.sleep(wait)

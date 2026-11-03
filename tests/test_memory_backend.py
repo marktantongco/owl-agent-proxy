@@ -305,3 +305,97 @@ class TestLoadMemoryConfig:
         monkeypatch.setattr(mcp, "_OWL_HOME", str(home))
         srv = mcp.OwlMcpServer(backend=FakeBackend(), out=io.StringIO())
         assert srv.memory.ttl_seconds == 120
+
+
+# ── Rank 8: concurrent access ─────────────────────────────────────────────
+class TestConcurrentAccess:
+    """MemoryBackend must survive concurrent in-process and cross-process access."""
+
+    async def _concurrent_set_get(self, mem, prefix, count=50):
+        """Many coroutines writing and reading different keys simultaneously."""
+        async def worker(i):
+            key = f"{prefix}:{i}"
+            mem.set(key, f"value-{i}")
+            assert mem.get(key) == f"value-{i}"
+
+        await asyncio.gather(*(worker(i) for i in range(count)))
+
+    def test_concurrent_asyncio_writes_and_reads(self, mem):
+        """50 coroutines writing+reading different keys must not corrupt state."""
+        async def run():
+            await self._concurrent_set_get(mem, "conc", count=50)
+            # All keys must be readable afterwards
+            for i in range(50):
+                assert mem.get(f"conc:{i}") == f"value-{i}"
+        asyncio.run(run())
+
+    def test_concurrent_asyncio_same_key(self, mem):
+        """Many coroutines writing the same key must end with one consistent value."""
+        async def run():
+            async def worker(i):
+                mem.set("shared", f"writer-{i}")
+            await asyncio.gather(*(worker(i) for i in range(100)))
+            # Final value must be one of the writers
+            final = mem.get("shared")
+            assert final is not None
+            assert final.startswith("writer-")
+        asyncio.run(run())
+
+    def test_wal_mode_enabled(self, mem):
+        """SQLite must be in WAL mode for concurrent reader/writer safety."""
+        mem._connect()
+        mode = mem._db.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_busy_timeout_set(self, mem):
+        """busy_timeout must be set for automatic retry on lock contention."""
+        mem._connect()
+        timeout = mem._db.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout > 0
+
+    def test_close_releases_resources(self, db_path):
+        """close() must close the db and release the file lock."""
+        backend = mcp.MemoryBackend(enabled=True, db_path=db_path, ttl_seconds=60)
+        backend._connect()
+        assert backend._db is not None
+        assert backend._lock_file is not None  # file lock held
+        backend.close()
+        assert backend._db is None
+        assert backend._lock_file is None  # file lock released
+
+    def test_file_lock_file_created(self, mem):
+        """A .lock sibling file must exist while the backend is open."""
+        mem._connect()
+        lock_path = str(mem._db_path) + ".lock"
+        from pathlib import Path
+        assert Path(lock_path).exists()
+        mem.close()
+        # After close, lock file may still exist on disk but is unlocked
+
+
+class TestCrossProcessLock:
+    """Cross-process locking: two processes can't hold the lock simultaneously."""
+
+    def test_lock_blocks_second_process(self, mem):
+        """fcntl.flock EX lock blocks a second opener of the same lock file."""
+        import fcntl
+        import os
+
+        mem._connect()
+        lock_path = str(mem._db_path) + ".lock"
+
+        # Open the same lock file from this process and try to grab an EX lock
+        # (non-blocking) — should fail because MemoryBackend holds it.
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # If we got here, the lock was NOT held — that's a bug
+                pytest.fail("second process should not acquire the lock")
+            except BlockingIOError:
+                # Expected: MemoryBackend holds the exclusive lock
+                pass
+        finally:
+            os.close(fd)
+
+        mem.close()

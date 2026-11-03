@@ -142,6 +142,13 @@ class TestRejectsAndNormalisation:
         assert is_public_ip("93.184.216.34")
         assert not is_public_ip("192.168.1.1")
         assert not is_public_ip("::1")
+        # IPv6
+        assert is_public_ip("2001:4860:4860::8888")   # Google DNS IPv6
+        assert not is_public_ip("fe80::1")            # link-local
+        assert not is_public_ip("fc00::1")            # unique local
+        assert not is_public_ip("ff02::1")            # multicast
+        assert not is_public_ip("2001:db8::1")        # documentation
+        assert not is_public_ip("::")                 # unspecified
 
     def test_protocol_hint_used_when_missing(self):
         source = ProxySource("hinted", "https://example.invalid/x", "json",
@@ -174,6 +181,44 @@ class TestTextParsing:
     def test_hint_applied(self):
         proxies = parse_text("8.8.8.8:1080\n", protocol_hint="socks4")
         assert proxies[0]["protocol"] == "socks4"
+
+    def test_ipv6_lines_parsed(self):
+        body = """
+        [::1]:8080
+        [2001:4860:4860::8888]:443
+        http://[2a00:1450::]:3128  trailing note
+        [fe80::1]:8080
+        10.0.0.1:8080
+        """
+        proxies = parse_text(body)
+        urls = [p["url"] for p in proxies]
+        # ::1 loopback rejected, fe80::1 link-local rejected, 10.0.0.1 private rejected
+        assert urls == [
+            "http://[2001:4860:4860::8888]:443",
+            "http://[2a00:1450::]:3128",
+        ]
+
+    def test_ipv6_with_brackets_in_json(self, proxyscrape_source):
+        item = {"ip": "[2001:4860:4860::8888]", "port": 443,
+                "protocols": ["http"], "country_code": "US"}
+        proxy = parse_proxy_item(item, proxyscrape_source)
+        assert proxy is not None
+        assert proxy["url"] == "http://[2001:4860:4860::8888]:443"
+
+    def test_ipv6_without_brackets_in_json(self, proxyscrape_source):
+        item = {"ip": "2001:4860:4860::8888", "port": 443,
+                "protocols": ["http"], "country_code": "US"}
+        proxy = parse_proxy_item(item, proxyscrape_source)
+        assert proxy is not None
+        assert proxy["url"] == "http://[2001:4860:4860::8888]:443"
+
+    def test_ipv6_loopback_rejected(self, proxyscrape_source):
+        item = {"ip": "::1", "port": 8080, "protocols": ["http"], "country_code": "US"}
+        assert parse_proxy_item(item, proxyscrape_source) is None
+
+    def test_ipv6_multicast_rejected(self, proxyscrape_source):
+        item = {"ip": "ff02::1", "port": 8080, "protocols": ["http"], "country_code": "US"}
+        assert parse_proxy_item(item, proxyscrape_source) is None
 
 
 class TestJsonEnvelopes:
@@ -522,4 +567,9 @@ class TestValidateProxy:
     async def test_unreachable_returns_none_quickly(self):
         started = time.perf_counter()
         assert await validate_proxy("http://127.0.0.1:9", timeout=0.5) is None
+        assert time.perf_counter() - started < 3
+
+    async def test_unreachable_ipv6_returns_none_quickly(self):
+        started = time.perf_counter()
+        assert await validate_proxy("http://[::1]:9", timeout=0.5) is None
         assert time.perf_counter() - started < 3

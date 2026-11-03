@@ -56,7 +56,11 @@ _LATENCY_KEYS = ("latency_ms", "latency", "latencyMs", "response_time", "respons
 
 _RE_LINE = re.compile(
     r"^(?:(?P<scheme>http|https|socks4|socks5)://)?"
-    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3}):(?P<port>\d{1,5})(?:\s.*)?$",
+    r"(?P<ip>"
+    r"\d{1,3}(?:\.\d{1,3}){3}"           # IPv4: 1.2.3.4
+    r"|"
+    r"\[[0-9a-fA-F:]+\]"                  # IPv6: [::1], [2001:db8::1]
+    r"):(?P<port>\d{1,5})(?:\s.*)?$",
     re.IGNORECASE,
 )
 
@@ -95,23 +99,36 @@ def normalize_protocol(value: Any) -> Optional[str]:
 
 
 def is_public_ip(ip: str) -> bool:
-    """True only for globally routable IPv4 addresses.
+    """True only for globally routable IP addresses (IPv4 or IPv6).
 
     Free lists occasionally contain private, loopback, CGNAT or reserved blocks.
     Those can never reach the public internet, so they are dropped at parse time
     rather than becoming permanently "failed" pool entries.
+
+    IPv6 addresses are accepted when they are globally routable
+    (``ipaddress``'s ``is_global`` excludes loopback, link-local, unique local,
+    multicast, unspecified, etc.). Extra IPv4 CGNAT/reserved blocks that
+    ``is_global`` does not cover are excluded explicitly below.
     """
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    if addr.version != 4:
+    if not addr.is_global:
         return False
-    return bool(addr.is_global) and not any(
-        addr in ipaddress.ip_network(net)
-        for net in ("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15",
-                    "240.0.0.0/4")
-    )
+    # Additional IPv4 reserved/CGNAT blocks not covered by is_global
+    if addr.version == 4:
+        return not any(
+            addr in ipaddress.ip_network(net)
+            for net in ("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15",
+                        "240.0.0.0/4")
+        )
+    # IPv6: is_global does NOT exclude multicast (ff00::/8). Explicitly reject
+    # multicast; loopback/link-local/unique-local/unspecified are already excluded
+    # by is_global. Documentation range 2001:db8::/32 is also excluded by is_global.
+    if addr.version == 6:
+        return not addr.is_multicast
+    return True
 
 
 def _latency_ms(item: Dict[str, Any]) -> Optional[float]:
@@ -222,6 +239,17 @@ DEFAULT_SOURCES: List[ProxySource] = [
 
 
 # ── parsing ────────────────────────────────────────────────────────────────
+def _format_proxy_url(protocol: str, ip: str, port: int) -> str:
+    """Format a proxy URL, bracketing IPv6 addresses.
+
+    IPv6 addresses must be enclosed in brackets in a URL:
+    ``http://[::1]:8080`` rather than ``http://::1:8080`` (ambiguous).
+    """
+    if ":" in ip:
+        return f"{protocol}://[{ip}]:{port}"
+    return f"{protocol}://{ip}:{port}"
+
+
 def parse_proxy_item(item: Any, source: ProxySource) -> Optional[Dict[str, Any]]:
     """Normalise one list item into ``{"url", "protocol", "country", ...}``.
 
@@ -230,7 +258,7 @@ def parse_proxy_item(item: Any, source: ProxySource) -> Optional[Dict[str, Any]]
     if not isinstance(item, dict):
         return None
     try:
-        ip = str(_first(item, _IP_KEYS, "")).strip()
+        ip = str(_first(item, _IP_KEYS, "")).strip().strip("[]")
         port = int(str(_first(item, _PORT_KEYS, "")).strip())
     except (TypeError, ValueError):
         return None
@@ -248,7 +276,7 @@ def parse_proxy_item(item: Any, source: ProxySource) -> Optional[Dict[str, Any]]
         return None
 
     proxy = {
-        "url": f"{protocol}://{ip}:{port}",
+        "url": _format_proxy_url(protocol, ip, port),
         "protocol": protocol,
         "country": _country(item),
         "source": source.name,
@@ -273,12 +301,12 @@ def parse_text(text: str, protocol_hint: Optional[str] = None,
         match = _RE_LINE.match(line)
         if not match:
             continue
-        ip = match.group("ip")
+        ip = match.group("ip").strip("[]")
         port = int(match.group("port"))
         if not is_public_ip(ip) or not (1 <= port <= 65535):
             continue
         protocol = (match.group("scheme") or hint or "http").lower()
-        url = f"{protocol}://{ip}:{port}"
+        url = _format_proxy_url(protocol, ip, port)
         if url in seen:
             continue
         seen.add(url)
