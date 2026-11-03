@@ -335,11 +335,18 @@ class Checks:
         info = responses[0]["result"]["serverInfo"]
         assert info["name"] == "owl-proxy", info
         tools = {tool["name"] for tool in responses[1]["result"]["tools"]}
-        assert tools == {"proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate"}, tools
+        # The proxy tools are the contract; memory tools were added alongside them
+        # and must be present without being confused for proxies. Asserting exact
+        # equality here is what silently broke this check when they landed.
+        required = {"proxy_pick", "proxy_stats", "proxy_rotate", "proxy_validate"}
+        assert required <= tools, f"missing proxy tools: {required - tools}"
+        assert all(name.startswith("proxy_") or name.startswith("memory_")
+                   for name in tools), tools
         for line in result.stdout.splitlines():
             if line.strip():
                 json.loads(line)  # stdout purity
-        return PASS, f"{info['version']}, 4 tools"
+        return PASS, (f"{info['version']}, {len(required)} proxy "
+                      f"+ {len(tools) - len(required)} memory tools")
 
     def live_harvest(self) -> Tuple[str, str]:
         from proxy_harvester import DEFAULT_SOURCES, UpstreamHarvester

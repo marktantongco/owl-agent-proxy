@@ -14,6 +14,31 @@ driver: pointer paths and timing, not a teleporting cursor.
 > access is permitted is decided by the target's terms and your jurisdiction —
 > this project ships **no compliance advice**. See [Limits](#limits).
 
+## Acknowledgement is required
+
+This rung does not run until the caller says, at the call site, that they accept
+responsibility for using it. Installing the package is not consent; nor is having
+read this page.
+
+```python
+await client.request("GET", url, protocol="stealth", acknowledge_terms=True)
+```
+
+or, for a process whose whole purpose is this rung:
+
+```bash
+export OWL_STEALTH_ACK=1
+```
+
+Without one of those, the call raises `ProtocolUnavailable` with a message
+stating what is being accepted — that the browser is built to be read as a human,
+that a site forbidding automated access may treat this as a breach of its terms,
+and that the legal consequences are the operator's. Only `1`, `true` or `yes` are
+treated as affirmative.
+
+The check runs **per call**, not at import: a long-lived process can serve callers
+with different intent, and the first caller's decision must not bind the rest.
+
 ## Install
 
 The engine is optional and never imported at module load, so the stack runs
@@ -50,6 +75,7 @@ async def main():
             "GET",
             "https://target.example",
             protocol="stealth",       # after http/1.1 and ja3 have been refused
+            acknowledge_terms=True,   # required: see "Acknowledgement" above
             timezone="Asia/Manila",   # see below — strongly recommended
             agent_id="job-42",        # keeps the exit IP sticky for this task
         )
@@ -81,6 +107,7 @@ Other pass-throughs: `locale`, `seed` (reproducible fingerprint), `humanize`
 
 | Situation | What happens |
 |---|---|
+| Not acknowledged | `ProtocolUnavailable` naming what must be accepted, before anything is imported or launched |
 | Library not installed | `ProtocolUnavailable` immediately, with the install + `fetch` commands. **Not retried**, and the proxy is **not** marked banned — a missing dependency is not the proxy's fault |
 | Requested via `request()` | Raises rather than silently downgrading to `http/1.1`; a downgraded call must not be labelled `stealth` |
 | Navigation timeout | Page is closed, browser torn down, error propagates to the retry loop |
@@ -118,7 +145,7 @@ reach (the release *index* on `api.github.com` resolves; the asset host does not
 To close that gap on a machine with normal networking, one command:
 
 ```bash
-python scripts/smoke-stealth.py --timezone Asia/Manila
+python scripts/smoke-stealth.py --i-understand --timezone Asia/Manila
 ```
 
 It checks the install, fetches the engine if needed, drives the stack's own
