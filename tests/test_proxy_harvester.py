@@ -472,6 +472,20 @@ class TestSessionAffinity:
         assert await manager.bind("a", "x.com", "http://1.1.1.1:80") is None
         assert await manager.bind("a", "x.com", "http://2.2.2.2:80") == "http://1.1.1.1:80"
 
+    async def test_invalidate_by_proxy(self):
+        manager = SessionAffinityManager(ttl_seconds=60)
+        await manager.bind("a1", "example.com", "http://93.184.216.34:8080")
+        await manager.bind("a2", "example.com", "http://93.184.216.34:8080")
+        await manager.bind("a3", "other.com", "http://1.1.1.1:80")
+        # two bindings point to the banned proxy
+        assert await manager.invalidate_by_proxy("http://93.184.216.34:8080") == 2
+        assert await manager.get("a1", "example.com") is None
+        assert await manager.get("a2", "example.com") is None
+        # binding to a different proxy is untouched
+        assert await manager.get("a3", "other.com") == "http://1.1.1.1:80"
+        # invalidating a proxy with no bindings returns 0
+        assert await manager.invalidate_by_proxy("http://no-such-proxy:80") == 0
+
 
 # ── probe helper (no network) ─────────────────────────────────────────────
 @pytest.mark.asyncio

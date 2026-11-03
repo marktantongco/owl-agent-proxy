@@ -22,7 +22,7 @@ import time
 import random
 import importlib.util
 import logging
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
@@ -607,9 +607,11 @@ class ProxyPoolLoader:
 
 
 class HTTPCache:
-    def __init__(self, ttl: int = DEFAULT_TTL):
+    def __init__(self, ttl: int = DEFAULT_TTL, max_entries: int = 10_000):
         self.ttl = ttl
-        self._memory: Dict[str, CachedResponse] = {}
+        self.max_entries = max(1, int(max_entries))
+        # OrderedDict gives us LRU eviction: move-to-end on get, popitem(last=False) on evict.
+        self._memory: "OrderedDict[str, CachedResponse]" = OrderedDict()
         self._lock = asyncio.Lock()
 
     def _key(self, method: str, url: str, params: Optional[Dict] = None, protocol: str = "http/1.1") -> str:
@@ -618,18 +620,34 @@ class HTTPCache:
 
     async def get(self, method: str, url: str, params: Optional[Dict] = None, protocol: str = "http/1.1") -> Optional[CachedResponse]:
         key = self._key(method, url, params, protocol)
-        if key in self._memory and self._memory[key].is_fresh():
-            return self._memory[key]
-        return None
+        async with self._lock:
+            entry = self._memory.get(key)
+            if entry is None:
+                return None
+            if not entry.is_fresh():
+                del self._memory[key]
+                return None
+            # LRU: move recently-used entry to the end.
+            self._memory.move_to_end(key)
+            return entry
 
     async def set(self, method: str, url: str, response: CachedResponse, params: Optional[Dict] = None):
         key = self._key(method, url, params, response.protocol)
         async with self._lock:
+            # If key exists, update and move to end.
+            if key in self._memory:
+                self._memory[key] = response
+                self._memory.move_to_end(key)
+                return
+            # Evict oldest entries until we're under the cap.
+            while len(self._memory) >= self.max_entries:
+                self._memory.popitem(last=False)
             self._memory[key] = response
 
 
 class RequestDeduplicator:
-    def __init__(self):
+    def __init__(self, max_in_flight: int = 1000):
+        self.max_in_flight = max(1, int(max_in_flight))
         self._in_flight: Dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
 
@@ -642,6 +660,10 @@ class RequestDeduplicator:
         async with self._lock:
             if key in self._in_flight:
                 return await self._in_flight[key]
+            # Cap in-flight entries: evict the oldest to make room.
+            if len(self._in_flight) >= self.max_in_flight:
+                oldest_key = next(iter(self._in_flight))
+                self._in_flight.pop(oldest_key, None)
             future = asyncio.Future()
             self._in_flight[key] = future
         try:
@@ -1094,6 +1116,11 @@ class ProxyRotator(UpstreamHarvestingMixin):
 
     async def mark_banned(self, proxy: ProxyEntry):
         proxy.mark_failed()
+        # Invalidate any sticky binding pinned to this proxy so the affected
+        # agent re-picks on the next request instead of staying bound to a
+        # dead proxy until TTL expires.
+        if self._affinity is not None:
+            await self._affinity.invalidate_by_proxy(proxy.url)
 
     async def rotate(self, agent_id: str = "default",
                      domain: Optional[str] = None) -> bool:
@@ -1131,6 +1158,8 @@ class ResilientClient:
     def __init__(
         self,
         cache_ttl: int = DEFAULT_TTL,
+        cache_max_entries: int = 10_000,
+        dedup_max_in_flight: int = 1000,
         rate_limit: float = DEFAULT_RATE,
         max_retries: int = MAX_RETRIES,
         auto_load_proxies: bool = True,
@@ -1165,9 +1194,13 @@ class ResilientClient:
             rate_limit = float(config.get("rate_limit", rate_limit))
         if max_retries == MAX_RETRIES:
             max_retries = int(config.get("max_retries", max_retries))
+        if cache_max_entries == 10_000:
+            cache_max_entries = int(config.get("cache_max_entries", cache_max_entries))
+        if dedup_max_in_flight == 1000:
+            dedup_max_in_flight = int(config.get("dedup_max_in_flight", dedup_max_in_flight))
 
-        self.cache = HTTPCache(ttl=cache_ttl)
-        self.dedup = RequestDeduplicator()
+        self.cache = HTTPCache(ttl=cache_ttl, max_entries=cache_max_entries)
+        self.dedup = RequestDeduplicator(max_in_flight=dedup_max_in_flight)
         self.limiter = DomainRateLimiter(default_rate=rate_limit)
         self.use_upstream_harvester = bool(pick(use_upstream_harvester, "use_upstream_harvester", False))
         self.session_ttl = float(pick(session_ttl, "session_ttl", DEFAULT_SESSION_TTL))
