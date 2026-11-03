@@ -11,6 +11,8 @@ v7.1 additions (all optional, all lazy — cold import stays dependency-light):
   * MCP server for agents                            (mcp_proxy_server.py)
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import sys
@@ -20,26 +22,41 @@ import time
 import random
 import importlib.util
 import logging
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
 from urllib.parse import urlparse
 
-import aiohttp
-import aiofiles
+# ── lazy core dependencies ─────────────────────────────────────────────
+# aiohttp and httpx are required for network operations but are not needed
+# for --help, stats reads, config parsing or API-surface checks. Importing
+# them on first use keeps the cold import path near-instant.
+# aiofiles was removed: imported but never referenced anywhere in the module.
+_aiohttp: Any = None
+_httpx: Any = None
 
-try:
-    import httpx
 
-    try:  # httpx.AsyncClient(http2=True) raises ImportError without the h2 package
-        import h2  # noqa: F401
-        HTTP2_AVAILABLE = True
-    except ImportError:
-        HTTP2_AVAILABLE = False
-except ImportError:
-    httpx = None  # type: ignore
-    HTTP2_AVAILABLE = False
+def _require_aiohttp() -> Any:
+    global _aiohttp
+    if _aiohttp is None:
+        import aiohttp
+        _aiohttp = aiohttp
+    return _aiohttp
+
+
+def _require_httpx() -> Any:
+    global _httpx
+    if _httpx is None:
+        import httpx
+        _httpx = httpx
+    return _httpx
+
+
+# HTTP/2 is available when the h2 package can be imported; httpx itself is a
+# required dependency and is loaded lazily by _require_httpx(). Using
+# importlib.util.find_spec avoids any import side effects at module scope.
+HTTP2_AVAILABLE = importlib.util.find_spec("h2") is not None
 
 try:
     from curl_cffi.requests import AsyncSession as AsyncCurlSession
@@ -590,9 +607,11 @@ class ProxyPoolLoader:
 
 
 class HTTPCache:
-    def __init__(self, ttl: int = DEFAULT_TTL):
+    def __init__(self, ttl: int = DEFAULT_TTL, max_entries: int = 10_000):
         self.ttl = ttl
-        self._memory: Dict[str, CachedResponse] = {}
+        self.max_entries = max(1, int(max_entries))
+        # OrderedDict gives us LRU eviction: move-to-end on get, popitem(last=False) on evict.
+        self._memory: "OrderedDict[str, CachedResponse]" = OrderedDict()
         self._lock = asyncio.Lock()
 
     def _key(self, method: str, url: str, params: Optional[Dict] = None, protocol: str = "http/1.1") -> str:
@@ -601,18 +620,34 @@ class HTTPCache:
 
     async def get(self, method: str, url: str, params: Optional[Dict] = None, protocol: str = "http/1.1") -> Optional[CachedResponse]:
         key = self._key(method, url, params, protocol)
-        if key in self._memory and self._memory[key].is_fresh():
-            return self._memory[key]
-        return None
+        async with self._lock:
+            entry = self._memory.get(key)
+            if entry is None:
+                return None
+            if not entry.is_fresh():
+                del self._memory[key]
+                return None
+            # LRU: move recently-used entry to the end.
+            self._memory.move_to_end(key)
+            return entry
 
     async def set(self, method: str, url: str, response: CachedResponse, params: Optional[Dict] = None):
         key = self._key(method, url, params, response.protocol)
         async with self._lock:
+            # If key exists, update and move to end.
+            if key in self._memory:
+                self._memory[key] = response
+                self._memory.move_to_end(key)
+                return
+            # Evict oldest entries until we're under the cap.
+            while len(self._memory) >= self.max_entries:
+                self._memory.popitem(last=False)
             self._memory[key] = response
 
 
 class RequestDeduplicator:
-    def __init__(self):
+    def __init__(self, max_in_flight: int = 1000):
+        self.max_in_flight = max(1, int(max_in_flight))
         self._in_flight: Dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
 
@@ -625,6 +660,10 @@ class RequestDeduplicator:
         async with self._lock:
             if key in self._in_flight:
                 return await self._in_flight[key]
+            # Cap in-flight entries: evict the oldest to make room.
+            if len(self._in_flight) >= self.max_in_flight:
+                oldest_key = next(iter(self._in_flight))
+                self._in_flight.pop(oldest_key, None)
             future = asyncio.Future()
             self._in_flight[key] = future
         try:
@@ -681,7 +720,7 @@ class PoolBackend(Protocol):
 
     async def mark_banned(self, proxy: ProxyEntry) -> None: ...
 
-    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None): ...
+    async def load_all_sources(self, session: Optional[Any] = None): ...
 
     def load_cache(self) -> int: ...
 
@@ -985,7 +1024,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.proxies = [p for p in self.proxies if id(p) in keep_ids]
         self._urls = {p.url for p in self.proxies}
 
-    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None):
+    async def load_all_sources(self, session: Optional[Any] = None):
         managed = self._loader.load()
         for proxy in managed:
             if proxy.url in self._urls:
@@ -1077,6 +1116,11 @@ class ProxyRotator(UpstreamHarvestingMixin):
 
     async def mark_banned(self, proxy: ProxyEntry):
         proxy.mark_failed()
+        # Invalidate any sticky binding pinned to this proxy so the affected
+        # agent re-picks on the next request instead of staying bound to a
+        # dead proxy until TTL expires.
+        if self._affinity is not None:
+            await self._affinity.invalidate_by_proxy(proxy.url)
 
     async def rotate(self, agent_id: str = "default",
                      domain: Optional[str] = None) -> bool:
@@ -1114,6 +1158,8 @@ class ResilientClient:
     def __init__(
         self,
         cache_ttl: int = DEFAULT_TTL,
+        cache_max_entries: int = 10_000,
+        dedup_max_in_flight: int = 1000,
         rate_limit: float = DEFAULT_RATE,
         max_retries: int = MAX_RETRIES,
         auto_load_proxies: bool = True,
@@ -1148,9 +1194,13 @@ class ResilientClient:
             rate_limit = float(config.get("rate_limit", rate_limit))
         if max_retries == MAX_RETRIES:
             max_retries = int(config.get("max_retries", max_retries))
+        if cache_max_entries == 10_000:
+            cache_max_entries = int(config.get("cache_max_entries", cache_max_entries))
+        if dedup_max_in_flight == 1000:
+            dedup_max_in_flight = int(config.get("dedup_max_in_flight", dedup_max_in_flight))
 
-        self.cache = HTTPCache(ttl=cache_ttl)
-        self.dedup = RequestDeduplicator()
+        self.cache = HTTPCache(ttl=cache_ttl, max_entries=cache_max_entries)
+        self.dedup = RequestDeduplicator(max_in_flight=dedup_max_in_flight)
         self.limiter = DomainRateLimiter(default_rate=rate_limit)
         self.use_upstream_harvester = bool(pick(use_upstream_harvester, "use_upstream_harvester", False))
         self.session_ttl = float(pick(session_ttl, "session_ttl", DEFAULT_SESSION_TTL))
@@ -1207,7 +1257,7 @@ class ResilientClient:
         self._upstream_order: List[str] = list(self.local_upstreams.keys())
         # Sticky (agent_id, "llm-routing") → upstream name. Lazy-loaded.
         self._upstream_affinity: Any = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[Any] = None
         self._httpx_client = None
         self._httpx_proxied: Dict[str, Any] = {}
         self._curl_session: Optional[AsyncCurlSession] = None
@@ -1226,11 +1276,11 @@ class ResilientClient:
             return {}
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession()
+        self._session = _require_aiohttp().ClientSession()
         try:
-            if HTTP2_AVAILABLE and httpx is not None:
+            if HTTP2_AVAILABLE and _require_httpx() is not None:
                 try:
-                    self._httpx_client = httpx.AsyncClient(http2=True, timeout=30.0)
+                    self._httpx_client = _require_httpx().AsyncClient(http2=True, timeout=30.0)
                 except Exception as exc:
                     logger.warning(f"http/2 client unavailable: {exc}")
             if JA3_AVAILABLE:
@@ -1393,7 +1443,7 @@ class ResilientClient:
         raise RuntimeError(f"Max retries exceeded for {url}")
 
     async def _request_http1(self, method, url, params, headers, proxy_url, **kwargs):
-        async with self._session.request(method=method, url=url, params=params, headers=headers, proxy=proxy_url, timeout=aiohttp.ClientTimeout(total=30), **kwargs) as resp:
+        async with self._session.request(method=method, url=url, params=params, headers=headers, proxy=proxy_url, timeout=_require_aiohttp().ClientTimeout(total=30), **kwargs) as resp:
             content = await resp.read()
             return CachedResponse(status=resp.status, content=content, headers=dict(resp.headers), timestamp=0, ttl=0, protocol="http/1.1")
 
@@ -1408,7 +1458,7 @@ class ResilientClient:
         if proxy_url:
             client = self._httpx_proxied.get(proxy_url)
             if client is None:
-                client = httpx.AsyncClient(http2=True, timeout=30.0, proxy=proxy_url)
+                client = _require_httpx().AsyncClient(http2=True, timeout=30.0, proxy=proxy_url)
                 self._httpx_proxied[proxy_url] = client
                 # bound the cache; close evicted clients off the hot path
                 if len(self._httpx_proxied) > MAX_PROXIED_CLIENTS:
@@ -1614,7 +1664,7 @@ class ResilientClient:
                     url=llm_url,
                     params=params,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=60),
+                    timeout=_require_aiohttp().ClientTimeout(total=60),
                     **kwargs,
                 ) as resp:
                     content = await resp.read()

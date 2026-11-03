@@ -799,6 +799,20 @@ class SessionAffinityManager:
         async with self._lock:
             return self._bindings.pop((agent_id, domain), None) is not None
 
+    async def invalidate_by_proxy(self, proxy_url: str) -> int:
+        """Invalidate every sticky binding that points to ``proxy_url``.
+
+        Called by ``ProxyRotator.mark_banned`` so that an agent whose sticky
+        proxy just got banned re-picks on the next request instead of staying
+        pinned to a dead proxy until TTL expires.
+        """
+        async with self._lock:
+            keys = [key for key, binding in self._bindings.items()
+                    if binding.proxy_url == proxy_url]
+            for key in keys:
+                del self._bindings[key]
+            return len(keys)
+
     async def clear(self, agent_id: Optional[str] = None) -> int:
         async with self._lock:
             if agent_id is None:

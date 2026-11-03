@@ -87,6 +87,81 @@ class TestHTTPCache(unittest.TestCase):
             self.assertIsNone(result)
         asyncio.run(run())
 
+    def test_max_entries_evicts_oldest(self):
+        async def run():
+            cache = HTTPCache(ttl=300, max_entries=3)
+            for i in range(5):
+                resp = CachedResponse(
+                    status=200, content=f"resp-{i}".encode(),
+                    headers={}, timestamp=time.time(), ttl=300,
+                )
+                await cache.set("GET", f"https://example.com/{i}", resp)
+            self.assertIsNone(await cache.get("GET", "https://example.com/0"))
+            self.assertIsNone(await cache.get("GET", "https://example.com/1"))
+            self.assertIsNotNone(await cache.get("GET", "https://example.com/2"))
+            self.assertIsNotNone(await cache.get("GET", "https://example.com/3"))
+            self.assertIsNotNone(await cache.get("GET", "https://example.com/4"))
+        asyncio.run(run())
+
+    def test_get_moves_to_end_lru(self):
+        async def run():
+            cache = HTTPCache(ttl=300, max_entries=2)
+            for i in range(2):
+                resp = CachedResponse(
+                    status=200, content=f"resp-{i}".encode(),
+                    headers={}, timestamp=time.time(), ttl=300,
+                )
+                await cache.set("GET", f"https://example.com/{i}", resp)
+            await cache.get("GET", "https://example.com/0")
+            resp = CachedResponse(
+                status=200, content=b"resp-2", headers={}, timestamp=time.time(), ttl=300,
+            )
+            await cache.set("GET", "https://example.com/2", resp)
+            self.assertIsNotNone(await cache.get("GET", "https://example.com/0"))
+            self.assertIsNone(await cache.get("GET", "https://example.com/1"))
+            self.assertIsNotNone(await cache.get("GET", "https://example.com/2"))
+        asyncio.run(run())
+
+    def test_expired_entry_returned_as_none(self):
+        async def run():
+            now = [1000.0]
+            cache = HTTPCache(ttl=10)
+            resp = CachedResponse(
+                status=200, content=b"old", headers={},
+                timestamp=now[0], ttl=10,
+            )
+            await cache.set("GET", "https://example.com", resp)
+            now[0] = 1011
+            result = await cache.get("GET", "https://example.com")
+            self.assertIsNone(result)
+        asyncio.run(run())
+
+
+class TestRequestDeduplicatorCap(unittest.TestCase):
+    def test_max_in_flight_evicts_oldest(self):
+        async def run():
+            dedup = RequestDeduplicator(max_in_flight=2)
+            results = []
+
+            async def factory(tag):
+                await asyncio.sleep(0.01)
+                results.append(tag)
+                return tag
+
+            f1 = asyncio.ensure_future(dedup.execute("GET", "https://example.com/1", None, None, lambda: factory("one")))
+            f2 = asyncio.ensure_future(dedup.execute("GET", "https://example.com/2", None, None, lambda: factory("two")))
+            f3 = asyncio.ensure_future(dedup.execute("GET", "https://example.com/3", None, None, lambda: factory("three")))
+
+            r1, r2, r3 = await asyncio.gather(f1, f2, f3)
+            self.assertEqual(r1, "one")
+            self.assertEqual(r2, "two")
+            self.assertEqual(r3, "three")
+        asyncio.run(run())
+
+    def test_default_cap_is_finite(self):
+        dedup = RequestDeduplicator()
+        self.assertGreater(dedup.max_in_flight, 0)
+
 
 class TestProxyRotator(unittest.TestCase):
     def test_empty_pool_returns_none(self):
@@ -561,6 +636,36 @@ class TestProxyRotatorMore(unittest.TestCase):
                 os.unlink(fname)
         asyncio.run(run())
 
+    def test_mark_banned_invalidates_sticky_binding(self):
+        async def run():
+            proxy = ProxyEntry(
+                url="http://p1:80", proxy_type="dc", protocol="http",
+                source="test", tier=1,
+            )
+            rotator = ProxyRotator(proxies=[proxy])
+            affinity = rotator._ensure_affinity()
+            await affinity.bind("agent-1", "example.com", "http://p1:80")
+            self.assertEqual(await affinity.get("agent-1", "example.com"), "http://p1:80")
+
+            await rotator.mark_banned(proxy)
+
+            # binding is invalidated → agent re-picks on next request
+            self.assertIsNone(await affinity.get("agent-1", "example.com"))
+        asyncio.run(run())
+
+    def test_mark_banned_no_affinity_no_crash(self):
+        async def run():
+            proxy = ProxyEntry(
+                url="http://p1:80", proxy_type="dc", protocol="http",
+                source="test", tier=1,
+            )
+            rotator = ProxyRotator(proxies=[proxy])
+            # _affinity is None → must not raise
+            await rotator.mark_banned(proxy)
+            self.assertEqual(proxy.fail_count, 1)
+            self.assertFalse(proxy.is_banned())  # needs 3 failures
+        asyncio.run(run())
+
 
 class TestResilientClientLifecycle(unittest.TestCase):
     """ResilientClient __aenter__/__aexit__ and config reading."""
@@ -601,6 +706,15 @@ class TestResilientClientLifecycle(unittest.TestCase):
             finally:
                 os.unlink(fname)
         asyncio.run(run())
+
+    def test_cache_max_entries_and_dedup_cap(self):
+        client = ResilientClient(
+            auto_load_proxies=False,
+            cache_max_entries=500,
+            dedup_max_in_flight=100,
+        )
+        self.assertEqual(client.cache.max_entries, 500)
+        self.assertEqual(client.dedup.max_in_flight, 100)
 
 
 class TestProxyRotatorCacheRoundtrip(unittest.TestCase):
@@ -1944,9 +2058,14 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_httpx = AsyncMock()
             fake_httpx.aclose = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+            fake_httpx_mod = AsyncMock()
+            fake_httpx_mod.AsyncClient = lambda *a, **k: fake_httpx
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", True):
-                    with patch("proxy_defense.httpx.AsyncClient", return_value=fake_httpx):
+                    with patch("proxy_defense._require_httpx", return_value=fake_httpx_mod):
                         with patch("proxy_defense.JA3_AVAILABLE", False):
                             async with client:
                                 self.assertIsNotNone(client._session)
@@ -1973,7 +2092,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", False):
                     with patch("proxy_defense.JA3_AVAILABLE", False):
                         async with client:
@@ -1990,7 +2112,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", False):
                     with patch("proxy_defense.JA3_AVAILABLE", False):
                         async with client:
@@ -2004,7 +2129,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch.object(client.rotator, "load_cache", side_effect=RuntimeError("boom")):
                     with patch("proxy_defense.HTTP2_AVAILABLE", False):
                         with patch("proxy_defense.JA3_AVAILABLE", False):
