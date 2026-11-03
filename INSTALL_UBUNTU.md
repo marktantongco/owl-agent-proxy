@@ -75,18 +75,14 @@ curl -fsSL https://raw.githubusercontent.com/marktantongco/owl-agent-proxy/main/
 # Update package list
 sudo apt update
 
-# Install essential build tools and Python
+# Install Python and the basics. No compiler toolchain: the three runtime
+# dependencies publish manylinux wheels, so nothing is built from source.
 sudo apt install -y \
-    build-essential \
     python3 \
     python3-pip \
     python3-venv \
-    python3-dev \
-    libssl-dev \
-    libffi-dev \
     curl \
     git \
-    wget \
     ca-certificates
 
 # Verify Python version (must be >= 3.10)
@@ -309,11 +305,14 @@ git push -u origin main
 
 ### Build Failures
 
+The stack's dependencies install as prebuilt wheels, so a build failure means
+either your platform has no wheel or you added a source-only package.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `fatal error: Python.h: No such file or directory` | Missing `python3-dev` | `sudo apt install python3-dev` |
-| `openssl/ssl.h: No such file or directory` | Missing `libssl-dev` | `sudo apt install libssl-dev` |
-| `cffi extension build failed` | Missing build tools | `sudo apt install build-essential libffi-dev` |
+| `fatal error: Python.h: No such file or directory` | A dependency is compiling and needs headers | `sudo apt install python3-dev` |
+| `openssl/ssl.h: No such file or directory` | Compiling against OpenSSL | `sudo apt install libssl-dev` |
+| `cffi extension build failed` | Compiling a C extension | `sudo apt install build-essential libffi-dev` |
 | `pip: command not found` | pip not installed | `sudo apt install python3-pip` |
 
 ### Runtime Issues
@@ -366,8 +365,9 @@ rm -rf ~/owl-agent-proxy
 # Remove shell integration (edit ~/.bashrc and delete the OWL-AGENT section)
 sed -i '/# ─── 🦉 OWL-AGENT SHELL INTEGRATION/,/# ─── END OWL-AGENT/d' ~/.bashrc
 
-# Remove system packages (if no longer needed)
-sudo apt remove -y python3-dev libssl-dev libffi-dev
+# The installer no longer adds python3-dev / libssl-dev / libffi-dev, so there is
+# nothing to remove here. Only clean up leftovers from an older install:
+sudo apt remove -y python3-dev libssl-dev libffi-dev 2>/dev/null || true
 sudo apt autoremove -y
 ```
 
