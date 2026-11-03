@@ -315,6 +315,27 @@ class TestUpstreamHarvester:
         assert health["bad"]["failures"] == 1
         assert "connection refused" in health["bad"]["last_error"]
 
+    async def test_all_sources_fail_fail_open(self):
+        # All four sources unreachable: harvest returns [] (fail-open),
+        # never raises, and each source records a failure.
+        sources = [
+            make_source("s1", "https://s1.invalid/a.json"),
+            make_source("s2", "https://s2.invalid/a.json"),
+            make_source("s3", "https://s3.invalid/a.json"),
+            make_source("s4", "https://s4.invalid/a.json"),
+        ]
+        errors = {s.url for s in sources}
+        client = FakeClient({}, errors=errors)
+        harvester = UpstreamHarvester(sources=sources, client=client)
+
+        proxies = await harvester.harvest()
+        assert proxies == []  # fail-open: empty list, no exception
+
+        health = harvester.health.snapshot()
+        for name in ("s1", "s2", "s3", "s4"):
+            assert health[name]["failures"] == 1, f"{name} should have 1 failure"
+            assert "connection refused" in (health[name]["last_error"] or "")
+
     async def test_max_per_source_caps_output(self):
         src = make_source("a", "https://a.invalid/a.json")
         items = [public_item(ip=f"93.184.216.{i}") for i in range(1, 11)]
