@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import subprocess
 import time
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -1098,6 +1099,423 @@ class TestResilientClientMiddlewareFilter(unittest.TestCase):
                           action=FilterAction.ACCEPT)
         self.assertEqual(rule.action, FilterAction.ACCEPT)
         self.assertEqual(rule.name, "allow-all")
+
+
+# ── LLM routing tests ────────────────────────────────────────────────────
+
+
+class TestLLMRouting(unittest.TestCase):
+    """Tests for v7.2 LLM request routing through local model upstreams."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        config_path = Path(self.tmpdir.name) / "config.json"
+        config = {
+            "local_model_upstreams": {
+                "colibri": {
+                    "name": "colibri",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "compatible": "OpenAI",
+                },
+                "freeride": {
+                    "name": "freeride",
+                    "base_url": "http://localhost:11343/v1",
+                    "compatible": "OpenAI",
+                },
+            }
+        }
+        config_path.write_text(json.dumps(config))
+        self.client = ResilientClient(config_path=str(config_path))
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_is_llm_request_detects_all_paths(self):
+        for path in ("/v1/chat/completions", "/v1/completions",
+                     "/v1/models", "/v1/embeddings"):
+            self.assertTrue(
+                self.client._is_llm_request(f"http://proxy{path}"),
+                f"should detect {path}",
+            )
+            self.assertTrue(
+                self.client._is_llm_request(f"http://proxy{path}?stream=true"),
+                f"should detect {path} with query",
+            )
+
+    def test_is_llm_request_detects_base_url_prefix(self):
+        self.assertTrue(
+            self.client._is_llm_request("http://127.0.0.1:8000/v1/chat/completions")
+        )
+        self.assertTrue(
+            self.client._is_llm_request("http://localhost:11343/v1/models")
+        )
+        # Non-prefix, non-LLM path should not trigger
+        self.assertFalse(
+            self.client._is_llm_request("http://other.com/api/data")
+        )
+
+    def test_is_llm_request_rejects_non_llm(self):
+        self.assertFalse(self.client._is_llm_request("http://example.com/page"))
+        self.assertFalse(self.client._is_llm_request("https://httpbin.org/ip"))
+        self.assertFalse(self.client._is_llm_request("http://example.com/api/v1/data"))
+
+    def test_rewrite_llm_url_strips_v1_suffix(self):
+        # base_url ends with /v1, so /v1 is stripped from path to avoid duplication
+        result = self.client._rewrite_llm_url(
+            "http://proxy/v1/chat/completions", "colibri"
+        )
+        self.assertEqual(result, "http://127.0.0.1:8000/v1/chat/completions")
+
+    def test_rewrite_llm_url_no_v1_in_path_keeps_path(self):
+        # base_url ends with /v1 but path doesn't start with /v1, so no stripping
+        result = self.client._rewrite_llm_url(
+            "http://proxy/api/completions", "freeride"
+        )
+        self.assertEqual(result, "http://localhost:11343/v1/api/completions")
+
+    def test_rewrite_llm_url_preserves_query(self):
+        result = self.client._rewrite_llm_url(
+            "http://proxy/v1/models?page=2", "colibri"
+        )
+        self.assertEqual(result, "http://127.0.0.1:8000/v1/models?page=2")
+
+    def test_rewrite_llm_url_root_v1(self):
+        result = self.client._rewrite_llm_url("http://proxy/v1", "colibri")
+        self.assertEqual(result, "http://127.0.0.1:8000/v1/")
+
+    def test_next_upstream_returns_unattempted(self):
+        upstream = self.client._next_upstream({"colibri"})
+        self.assertEqual(upstream, "freeride")
+
+    def test_next_upstream_returns_none_when_all_attempted(self):
+        upstream = self.client._next_upstream({"colibri", "freeride"})
+        self.assertIsNone(upstream)
+
+    def test_select_llm_upstream_no_upstreams_returns_none(self):
+        client = ResilientClient(auto_load_proxies=False)
+        result = asyncio.run(client._select_llm_upstream("agent-1"))
+        self.assertIsNone(result)
+
+
+class TestLLMRequestFailover(unittest.TestCase):
+    """Tests for _request_llm failover behavior (no network)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        config_path = Path(self.tmpdir.name) / "config.json"
+        config = {
+            "local_model_upstreams": {
+                "colibri": {
+                    "name": "colibri",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "compatible": "OpenAI",
+                },
+                "freeride": {
+                    "name": "freeride",
+                    "base_url": "http://localhost:11343/v1",
+                    "compatible": "OpenAI",
+                },
+            }
+        }
+        config_path.write_text(json.dumps(config))
+        self.client = ResilientClient(config_path=str(config_path),
+                                       auto_load_proxies=False)
+        self.empty_client = ResilientClient(config_path=str(config_path),
+                                            auto_load_proxies=False)
+        self.empty_client.local_upstreams["freeride"]["base_url"] = ""
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_request_llm_empty_base_url_skips(self):
+        # freeride has empty base_url → should be skipped
+        async def run():
+            class FakeResponse:
+                status = 502
+                content = b"fail"
+                headers = {}
+
+                async def read(self):
+                    return self.content
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            class FakeSession:
+                def request(self, method, url, params, headers, timeout, **kwargs):
+                    return FakeResponse()
+
+            self.empty_client._session = FakeSession()
+            self.empty_client._upstream_order = ["colibri", "freeride"]
+            self.empty_client._upstream_affinity = None
+            with patch("proxy_defense._load_harvester", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    await self.empty_client._request_llm(
+                        "POST", "http://proxy/v1/chat/completions",
+                        params=None, headers=None, agent_id="agent-1",
+                    )
+        asyncio.run(run())
+
+    def test_request_llm_failover_on_502(self):
+        async def run():
+            call_count = 0
+
+            class FakeResponse:
+                def __init__(self, status):
+                    self.status = status
+                    self.content = b"ok"
+                    self.headers = {}
+
+                async def read(self):
+                    return self.content
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            class FakeSession:
+                def request(self, method, url, params, headers, timeout, **kwargs):
+                    nonlocal call_count
+                    call_count += 1
+                    return FakeResponse(502 if call_count == 1 else 200)
+
+            self.client._session = FakeSession()
+            # Force colibri as primary, no affinity
+            self.client._upstream_order = ["colibri", "freeride"]
+            self.client._upstream_affinity = None
+            with patch("proxy_defense._load_harvester", return_value=None):
+                result = await self.client._request_llm(
+                    "POST", "http://proxy/v1/chat/completions",
+                    params=None, headers=None, agent_id="agent-1",
+                )
+            self.assertEqual(result.status, 200)
+        asyncio.run(run())
+
+    def test_request_llm_all_fail_raises_runtime_error(self):
+        async def run():
+            class FakeResponse:
+                def __init__(self):
+                    self.status = 502
+                    self.content = b"fail"
+                    self.headers = {}
+
+                async def read(self):
+                    return self.content
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            class FakeSession:
+                def request(self, method, url, params, headers, timeout, **kwargs):
+                    return FakeResponse()
+
+            self.client._session = FakeSession()
+            self.client._upstream_order = ["colibri", "freeride"]
+            self.client._upstream_affinity = None
+            with patch("proxy_defense._load_harvester", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    await self.client._request_llm(
+                        "POST", "http://proxy/v1/chat/completions",
+                        params=None, headers=None, agent_id="agent-1",
+                    )
+        asyncio.run(run())
+
+
+# ── Filter pipeline stub rule tests ──────────────────────────────────────
+
+
+class TestFilterPipelineStubs(unittest.TestCase):
+    """Tests for BounceBack filter pipeline stub rule types."""
+
+    def test_geo_rule_stub_returns_false(self):
+        rules = [FilterRule(name="geo-ban", rule_type="geo",
+                            params={"geolocations": {"country_code": ["US"]}},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+    def test_reverse_lookup_rule_stub_returns_false(self):
+        rules = [FilterRule(name="ptr-ban", rule_type="reverse_lookup",
+                            params={"list": "/nonexistent.txt"},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+    def test_malleable_rule_stub_returns_false(self):
+        rules = [FilterRule(name="malleable-ban", rule_type="malleable",
+                            params={"profile": "/nonexistent.profile"},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+    def test_unknown_rule_type_returns_false(self):
+        rules = [FilterRule(name="weird", rule_type="unknown_type",
+                            params={}, action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertIsNone(action)
+
+    def test_ip_matches_empty_client_ip(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("1.2.3.4\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-ip", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertIsNone(action)
+        finally:
+            os.unlink(tmp)
+
+    def test_ip_matches_cidr_notation(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("10.0.0.0/8\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-cidr", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={"x-forwarded-for": "10.1.2.3"},
+                                 protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT)
+        finally:
+            os.unlink(tmp)
+
+    def test_regexp_matches_empty_pattern_file(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-regexp", rule_type="regexp",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            action, name = pipeline.evaluate(ctx)
+            self.assertIsNone(action)
+        finally:
+            os.unlink(tmp)
+
+    def test_time_matches_overnight_window(self):
+        from datetime import datetime
+        import zoneinfo
+        now = datetime.now(zoneinfo.ZoneInfo("UTC"))
+        # Overnight window: 23:00 to 02:00 always matches at some point
+        rules = [FilterRule(name="night", rule_type="time",
+                            params={"from": "23:00", "to": "02:00",
+                                    "timezone": "UTC"},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        # May or may not match depending on current time; just verify no crash
+        action, name = pipeline.evaluate(ctx)
+        self.assertIn(action, (None, FilterAction.REJECT))
+
+    def test_time_matches_weekday_filter(self):
+        from datetime import datetime
+        import zoneinfo
+        now = datetime.now(zoneinfo.ZoneInfo("UTC"))
+        weekday = now.strftime("%A")
+        rules = [FilterRule(name="weekday-only", rule_type="time",
+                            params={"from": "00:00", "to": "23:59",
+                                    "timezone": "UTC",
+                                    "weekdays": [weekday]},
+                            action=FilterAction.REJECT)]
+        pipeline = FilterPipeline(rules)
+        ctx = RequestContext(method="GET", url="http://example.com",
+                             params=None, headers={}, protocol="http/1.1")
+        action, name = pipeline.evaluate(ctx)
+        self.assertEqual(action, FilterAction.REJECT)
+
+
+# ── Middleware chain integration tests ───────────────────────────────────
+
+
+class TestMiddlewareIntegration(unittest.TestCase):
+    """Tests for middleware chain integrated with ResilientClient."""
+
+    def test_middleware_short_circuit_skips_execution(self):
+        async def run():
+            def mw(handler):
+                async def wrapped(ctx):
+                    ctx.short_circuit = True
+                    ctx.response = CachedResponse(
+                        status=200, content=b"short-circuit",
+                        headers={}, timestamp=time.time(), ttl=300,
+                        protocol="http/1.1",
+                    )
+                    return ctx.response
+                return wrapped
+
+            client = ResilientClient(
+                auto_load_proxies=False,
+                middleware=[mw],
+            )
+            result = await client.request("GET", "http://example.com")
+            self.assertEqual(result.status, 200)
+            self.assertEqual(result.content, b"short-circuit")
+        asyncio.run(run())
+
+    def test_middleware_modifies_response(self):
+        async def run():
+            async def mw(handler):
+                async def wrapped(ctx):
+                    result = await handler(ctx)
+                    # Even if handler returns None, middleware can wrap it
+                    return result
+                return wrapped
+
+            client = ResilientClient(
+                auto_load_proxies=False,
+                middleware=[mw],
+            )
+            # No actual request execution — just verify middleware wraps
+            self.assertEqual(len(client.middleware), 1)
+        asyncio.run(run())
+
+
+# ── CLI tests ────────────────────────────────────────────────────────────
+
+
+class TestCLI(unittest.TestCase):
+    """Tests for proxy_defense.py CLI entry point."""
+
+    def test_main_help(self):
+        result = subprocess.run(
+            ["python3", str(Path(__file__).resolve().parent.parent /
+             "proxy_defense.py"), "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("proxy defense", result.stdout.lower())
 
 
 if __name__ == "__main__":

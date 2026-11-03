@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1144,3 +1145,115 @@ class TestPickWithMemory:
             assert stored is None
         finally:
             await backend.stop()
+
+
+# ── mcp_proxy_server coverage gap tests ──────────────────────────────────
+
+
+class TestMCPServerCoverageGaps(unittest.TestCase):
+    """Tests for uncovered mcp_proxy_server.py lines."""
+
+    def test_stdout_guard_redirects_print_to_stderr(self):
+        captured_stderr = io.StringIO()
+        original_stderr = sys.stderr
+        sys.stderr = captured_stderr
+        try:
+            with mcp.stdout_guard():
+                print("stray output")
+        finally:
+            sys.stderr = original_stderr
+        stderr_output = captured_stderr.getvalue()
+        self.assertIn("stray output", stderr_output)
+
+    def test_read_message_unreasonable_content_length(self):
+        # Content-Length of 0 should raise ProtocolError
+        with self.assertRaises(mcp.ProtocolError) as ctx:
+            mcp.read_message(io.StringIO("Content-Length: 0\r\n\r\n"))
+        self.assertEqual(ctx.exception.code, -32700)
+
+    def test_read_message_excessive_content_length(self):
+        # Content-Length larger than max_bytes should raise ProtocolError
+        with self.assertRaises(mcp.ProtocolError) as ctx:
+            mcp.read_message(io.StringIO("Content-Length: 999999999\r\n\r\n"))
+        self.assertEqual(ctx.exception.code, -32700)
+
+    def test_proxy_backend_start_import_error(self):
+        async def run():
+            backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+            with patch("proxy_defense.ResilientClient", side_effect=ImportError("no module")):
+                with self.assertRaises(ImportError):
+                    await backend.start()
+        asyncio.run(run())
+
+    def test_proxy_backend_stop_when_not_started(self):
+        async def run():
+            backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+            await backend.stop()
+            self.assertFalse(backend.started)
+        asyncio.run(run())
+
+    def test_proxy_backend_pick_without_start(self):
+        async def run():
+            backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+            result = await backend.pick("example.com", "agent1", "sticky")
+            self.assertIsNone(result["proxy"])
+        asyncio.run(run())
+
+    def test_proxy_backend_stats_without_start(self):
+        async def run():
+            backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+            stats = await backend.stats()
+            self.assertIn("proxies_total", stats)
+        asyncio.run(run())
+
+    def test_run_websearch_empty_output(self):
+        async def run():
+            server = mcp.OwlMcpServer(out=io.StringIO())
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       return_value=mock_proc):
+                result = await server._run_websearch(["web-search", "test"])
+            self.assertEqual(result, {"ok": True, "results": [], "count": 0})
+        asyncio.run(run())
+
+    def test_run_websearch_unexpected_exception(self):
+        async def run():
+            server = mcp.OwlMcpServer(out=io.StringIO())
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       side_effect=RuntimeError("unexpected")):
+                result = await server._run_websearch(["web-search", "test"])
+            self.assertIn("error", result)
+            self.assertIn("unexpected", result["error"])
+        asyncio.run(run())
+
+    def test_call_tool_generic_exception(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+
+        class ExplodingBackend:
+            async def pick(self, domain, agent_id, rotation_mode):
+                raise ValueError("unexpected error")
+
+            async def stats(self):
+                return {"proxies_total": 0}
+
+            async def rotate(self, domain, agent_id):
+                return {"rotated": True}
+
+            async def validate(self, proxy_url):
+                return {"valid": False}
+
+            async def stop(self):
+                pass
+
+        server.backend = ExplodingBackend()
+        response = asyncio.run(
+            server._tools_call(1, {"name": "proxy_pick", "arguments": {"domain": "example.com"}})
+        )
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("unexpected error", response["result"]["content"][0]["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1234,16 +1234,19 @@ class ResilientClient:
         if cached:
             return cached
 
-        async def factory():
+        async def factory(ctx=None):
             return await self._execute_with_retry(
                 method, url, params, headers, protocol,
                 agent_id=agent_id, rotation_mode=rotation_mode, **kwargs,
             )
 
         # v7.3: middleware chain (go-stealth pattern) — wrap the factory so
-        # middleware can inspect/modify requests and responses.
-        handler = chain(self.middleware, factory)
-        return await self.dedup.execute(method, url, params, protocol, handler)
+        # middleware can inspect/modify requests and responses. The chain
+        # handler expects a RequestContext, so we wrap it in a no-arg factory
+        # for the deduplicator.
+        async def chained_factory():
+            return await chain(self.middleware, factory)(ctx)
+        return await self.dedup.execute(method, url, params, protocol, chained_factory)
 
     async def _execute_with_retry(self, method, url, params, headers, protocol,
                                   agent_id: str = "default",
