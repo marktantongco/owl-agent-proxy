@@ -479,7 +479,9 @@ class OwlMcpServer:
         try:
             import json
             config = json.loads(config_path.read_text())
-        except Exception:
+        except Exception:  # a broken config disables memory; say so in the log
+            logger.debug("mcp config unreadable at %s; memory disabled",
+                         config_path, exc_info=True)
             return
         mem_cfg = config.get("mcp_memory", {})
         if not mem_cfg or not mem_cfg.get("enabled"):
