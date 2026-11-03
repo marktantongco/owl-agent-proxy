@@ -448,7 +448,11 @@ class TestHttp2Proxies:
 
     async def _client_with_fakes(self, config_file, monkeypatch):
         FakeHttpxClient.instances = []
-        monkeypatch.setattr(pd.httpx, "AsyncClient", FakeHttpxClient)
+
+        class _HttpxModule:
+            AsyncClient = FakeHttpxClient
+
+        monkeypatch.setattr(pd, "_require_httpx", lambda: _HttpxModule())
         client = ResilientClient(auto_load_proxies=False, config_path=config_file())
         client._httpx_client = FakeHttpxClient(http2=True)
         return client

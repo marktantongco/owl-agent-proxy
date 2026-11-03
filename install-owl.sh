@@ -17,6 +17,7 @@
 #   ./install-owl.sh                 install + verify
 #   ./install-owl.sh --no-live       install + verify without network checks
 #   ./install-owl.sh --full          also install h2 / curl_cffi / websockets / redis
+#   ./install-owl.sh --quick         skip verification (for re-installs)
 #   ./install-owl.sh --verify-only   re-run verification against an existing install
 #   ./install-owl.sh --rollback      restore the most recent backup
 #   ./install-owl.sh --purge         delete ~/.owl-agent (asks first)
@@ -39,6 +40,7 @@ PY_SYSTEM="${PYTHON:-$(command -v python3 || command -v python || true)}"
 LIVE=1
 FULL=0
 MODE="install"
+QUICK=0
 
 RED=$'\033[0;31m'; GRN=$'\033[0;32m'; YEL=$'\033[0;33m'
 BLU=$'\033[0;34m'; NC=$'\033[0m'
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help)      usage; exit 0 ;;
     --full)         FULL=1 ;;
     --no-live)      LIVE=0 ;;
+    --quick)        QUICK=1 ;;        # skip verification (for re-installs)
     --verify-only)  MODE="verify" ;;
     --rollback)     MODE="rollback" ;;
     --purge)        MODE="purge" ;;
@@ -202,7 +205,6 @@ PY="$VENV/bin/python"
 
 # ── dependencies ─────────────────────────────────────────────────────────────
 step "Dependencies"
-"$PY" -m pip install -q --upgrade pip setuptools wheel 2>/dev/null || warn "pip self-upgrade skipped"
 info "installing core requirements"
 # requirements.txt names three packages, all with wheels for every interpreter
 # this supports, so there is nothing to fall back to: a failure here means the
@@ -348,11 +350,8 @@ else
   info "config/proxy_pool.json preserved"
 fi
 
-"$PY" -m pip freeze > "$OWL_HOME/requirements.txt" 2>/dev/null || true
-"$PY" -m compileall -q "$OWL_HOME" >/dev/null 2>&1 || true
-
 # ── verification ─────────────────────────────────────────────────────────────
-if [[ "${OWL_SKIP_VERIFY:-0}" == "1" ]]; then
+if [[ "${OWL_SKIP_VERIFY:-0}" == "1" ]] || [[ "$QUICK" == "1" ]]; then
   warn "OWL_SKIP_VERIFY=1 — skipping verification"
   VERIFY_RC=0
 else

@@ -11,6 +11,8 @@ v7.1 additions (all optional, all lazy — cold import stays dependency-light):
   * MCP server for agents                            (mcp_proxy_server.py)
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import sys
@@ -26,20 +28,35 @@ from typing import Optional, Dict, Any, List, Union, Protocol, runtime_checkable
 from pathlib import Path
 from urllib.parse import urlparse
 
-import aiohttp
-import aiofiles
+# ── lazy core dependencies ─────────────────────────────────────────────
+# aiohttp and httpx are required for network operations but are not needed
+# for --help, stats reads, config parsing or API-surface checks. Importing
+# them on first use keeps the cold import path near-instant.
+# aiofiles was removed: imported but never referenced anywhere in the module.
+_aiohttp: Any = None
+_httpx: Any = None
 
-try:
-    import httpx
 
-    try:  # httpx.AsyncClient(http2=True) raises ImportError without the h2 package
-        import h2  # noqa: F401
-        HTTP2_AVAILABLE = True
-    except ImportError:
-        HTTP2_AVAILABLE = False
-except ImportError:
-    httpx = None  # type: ignore
-    HTTP2_AVAILABLE = False
+def _require_aiohttp() -> Any:
+    global _aiohttp
+    if _aiohttp is None:
+        import aiohttp
+        _aiohttp = aiohttp
+    return _aiohttp
+
+
+def _require_httpx() -> Any:
+    global _httpx
+    if _httpx is None:
+        import httpx
+        _httpx = httpx
+    return _httpx
+
+
+# HTTP/2 is available when the h2 package can be imported; httpx itself is a
+# required dependency and is loaded lazily by _require_httpx(). Using
+# importlib.util.find_spec avoids any import side effects at module scope.
+HTTP2_AVAILABLE = importlib.util.find_spec("h2") is not None
 
 try:
     from curl_cffi.requests import AsyncSession as AsyncCurlSession
@@ -681,7 +698,7 @@ class PoolBackend(Protocol):
 
     async def mark_banned(self, proxy: ProxyEntry) -> None: ...
 
-    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None): ...
+    async def load_all_sources(self, session: Optional[Any] = None): ...
 
     def load_cache(self) -> int: ...
 
@@ -985,7 +1002,7 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.proxies = [p for p in self.proxies if id(p) in keep_ids]
         self._urls = {p.url for p in self.proxies}
 
-    async def load_all_sources(self, session: Optional[aiohttp.ClientSession] = None):
+    async def load_all_sources(self, session: Optional[Any] = None):
         managed = self._loader.load()
         for proxy in managed:
             if proxy.url in self._urls:
@@ -1207,7 +1224,7 @@ class ResilientClient:
         self._upstream_order: List[str] = list(self.local_upstreams.keys())
         # Sticky (agent_id, "llm-routing") → upstream name. Lazy-loaded.
         self._upstream_affinity: Any = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[Any] = None
         self._httpx_client = None
         self._httpx_proxied: Dict[str, Any] = {}
         self._curl_session: Optional[AsyncCurlSession] = None
@@ -1226,11 +1243,11 @@ class ResilientClient:
             return {}
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession()
+        self._session = _require_aiohttp().ClientSession()
         try:
-            if HTTP2_AVAILABLE and httpx is not None:
+            if HTTP2_AVAILABLE and _require_httpx() is not None:
                 try:
-                    self._httpx_client = httpx.AsyncClient(http2=True, timeout=30.0)
+                    self._httpx_client = _require_httpx().AsyncClient(http2=True, timeout=30.0)
                 except Exception as exc:
                     logger.warning(f"http/2 client unavailable: {exc}")
             if JA3_AVAILABLE:
@@ -1393,7 +1410,7 @@ class ResilientClient:
         raise RuntimeError(f"Max retries exceeded for {url}")
 
     async def _request_http1(self, method, url, params, headers, proxy_url, **kwargs):
-        async with self._session.request(method=method, url=url, params=params, headers=headers, proxy=proxy_url, timeout=aiohttp.ClientTimeout(total=30), **kwargs) as resp:
+        async with self._session.request(method=method, url=url, params=params, headers=headers, proxy=proxy_url, timeout=_require_aiohttp().ClientTimeout(total=30), **kwargs) as resp:
             content = await resp.read()
             return CachedResponse(status=resp.status, content=content, headers=dict(resp.headers), timestamp=0, ttl=0, protocol="http/1.1")
 
@@ -1408,7 +1425,7 @@ class ResilientClient:
         if proxy_url:
             client = self._httpx_proxied.get(proxy_url)
             if client is None:
-                client = httpx.AsyncClient(http2=True, timeout=30.0, proxy=proxy_url)
+                client = _require_httpx().AsyncClient(http2=True, timeout=30.0, proxy=proxy_url)
                 self._httpx_proxied[proxy_url] = client
                 # bound the cache; close evicted clients off the hot path
                 if len(self._httpx_proxied) > MAX_PROXIED_CLIENTS:
@@ -1614,7 +1631,7 @@ class ResilientClient:
                     url=llm_url,
                     params=params,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=60),
+                    timeout=_require_aiohttp().ClientTimeout(total=60),
                     **kwargs,
                 ) as resp:
                     content = await resp.read()

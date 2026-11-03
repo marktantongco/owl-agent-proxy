@@ -1944,9 +1944,14 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_httpx = AsyncMock()
             fake_httpx.aclose = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+            fake_httpx_mod = AsyncMock()
+            fake_httpx_mod.AsyncClient = lambda *a, **k: fake_httpx
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", True):
-                    with patch("proxy_defense.httpx.AsyncClient", return_value=fake_httpx):
+                    with patch("proxy_defense._require_httpx", return_value=fake_httpx_mod):
                         with patch("proxy_defense.JA3_AVAILABLE", False):
                             async with client:
                                 self.assertIsNotNone(client._session)
@@ -1973,7 +1978,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", False):
                     with patch("proxy_defense.JA3_AVAILABLE", False):
                         async with client:
@@ -1990,7 +1998,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch("proxy_defense.HTTP2_AVAILABLE", False):
                     with patch("proxy_defense.JA3_AVAILABLE", False):
                         async with client:
@@ -2004,7 +2015,10 @@ class TestResilientClientContextManager(unittest.TestCase):
             fake_session = AsyncMock()
             fake_session.close = AsyncMock()
 
-            with patch("proxy_defense.aiohttp.ClientSession", return_value=fake_session):
+            fake_aiohttp_mod = AsyncMock()
+            fake_aiohttp_mod.ClientSession = lambda *a, **k: fake_session
+
+            with patch("proxy_defense._require_aiohttp", return_value=fake_aiohttp_mod):
                 with patch.object(client.rotator, "load_cache", side_effect=RuntimeError("boom")):
                     with patch("proxy_defense.HTTP2_AVAILABLE", False):
                         with patch("proxy_defense.JA3_AVAILABLE", False):
