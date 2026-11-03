@@ -1,0 +1,171 @@
+diff --git a/e2e/owl_local_reject_test.go b/e2e/owl_local_reject_test.go
+new file mode 100644
+index 0000000..b33370a
+--- /dev/null
++++ b/e2e/owl_local_reject_test.go
+@@ -0,0 +1,95 @@
++package e2e
++
++import (
++	"bufio"
++	"encoding/json"
++	"fmt"
++	"net"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/trefeon/agentrouter-spoof-proxy/internal/config"
++	"github.com/trefeon/agentrouter-spoof-proxy/internal/proxy"
++)
++
++func TestOWLLocalRejectStalledBodies(t *testing.T) {
++	cases := []struct {
++		name, method, path string
++		length             int
++		auth               bool
++		expect             int
++		code               string
++	}{
++		{"unknown", "POST", "/missing", 32, false, 404, "not_found"},
++		{"unknown-expect", "POST", "/missing", 32, false, 404, "not_found"},
++		{"unauthorized", "POST", "/v1/messages", 32, false, 401, "unauthorized"},
++		{"method", "PUT", "/v1/messages", 32, true, 405, "method_not_allowed"},
++		{"count-unauthorized", "POST", "/v1/messages/count_tokens", 32, false, 401, "unauthorized"},
++		{"count-too-large", "POST", "/v1/messages/count_tokens", proxy.MaxBodySize + 1, true, 413, "payload_too_large"},
++		{"count-timeout", "POST", "/v1/messages/count_tokens", 32, true, 408, "request_timeout"},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			env := newEnv(t, func(c *config.Config) { c.ProxyAuthToken = "test-token"; c.BodyUploadTimeoutMs = 500 })
++			c, err := net.Dial("tcp", env.Addr)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer c.Close()
++			_ = c.SetDeadline(time.Now().Add(2 * time.Second))
++			auth := ""
++			if tc.auth {
++				auth = "X-Proxy-Token: test-token\r\n"
++			}
++			if strings.HasSuffix(tc.name, "-expect") {
++				auth += "Expect: 100-continue\r\n"
++			}
++			_, err = fmt.Fprintf(c, "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n%s\r\n", tc.method, tc.path, env.Addr, tc.length, auth)
++			if err != nil {
++				t.Fatal(err)
++			}
++			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer resp.Body.Close()
++			if resp.StatusCode != tc.expect {
++				t.Fatalf("status=%d want=%d", resp.StatusCode, tc.expect)
++			}
++			var data struct {
++				Error struct {
++					Code string `json:"code"`
++				} `json:"error"`
++			}
++			if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
++				t.Fatal(err)
++			}
++			if data.Error.Code != tc.code {
++				t.Fatalf("code=%s want=%s", data.Error.Code, tc.code)
++			}
++			if env.Mock.PostCount() != 0 {
++				t.Fatal("request forwarded upstream")
++			}
++		})
++	}
++}
++
++func TestOWLCountTokensNormal(t *testing.T) {
++	env := newEnv(t, func(c *config.Config) { c.ProxyAuthToken = "test-token"; c.BodyUploadTimeoutMs = 5000 })
++	status, body := postBody(t, env, "/v1/messages/count_tokens", `{"model":"test","messages":[{"role":"user","content":"hello"}]}`, map[string]string{"X-Proxy-Token": "test-token", "Content-Type": "application/json"})
++	if status != 200 {
++		t.Fatalf("status=%d body=%s", status, body)
++	}
++	var data map[string]any
++	if err := json.Unmarshal(body, &data); err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := data["input_tokens"]; !ok {
++		t.Fatalf("missing input_tokens: %s", body)
++	}
++	if env.Mock.PostCount() != 0 {
++		t.Fatal("request forwarded upstream")
++	}
++}
+diff --git a/internal/server/server.go b/internal/server/server.go
+index 47c182b..9eb7de3 100644
+--- a/internal/server/server.go
++++ b/internal/server/server.go
+@@ -5,6 +5,7 @@ package server
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"log/slog"
+@@ -341,14 +342,25 @@ func isSpace(b byte) bool {
+ 	return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '\v' || b == '\f'
+ }
+ 
+-// rejectLocally sends a local error JSON and drains the request body so
+-// the keep-alive socket stays clean. Mirrors proxy.mjs rejectLocally.
++// rejectLocally sends the error before a bounded, deadline-limited drain.
++// An incomplete HTTP/1 body cannot safely be reused for another request.
+ func rejectLocally(w http.ResponseWriter, r *http.Request, status int, code, message string) {
++	rc := http.NewResponseController(w)
++	hasBody := r.Body != nil && (r.ContentLength != 0 || len(r.TransferEncoding) != 0)
++	if hasBody && r.ProtoMajor == 1 {
++		w.Header().Set("Connection", "close")
++	}
++	if hasBody {
++		_ = rc.SetReadDeadline(time.Now().Add(2 * time.Second))
++	}
+ 	respondJSON(w, status, map[string]any{
+ 		"error": map[string]any{"code": code, "message": message, "type": "proxy_error"},
+ 	})
+-	if r.Body != nil {
+-		_, _ = io.Copy(io.Discard, r.Body)
++	if hasBody {
++		_ = rc.Flush()
++		_, _ = io.CopyN(io.Discard, r.Body, 1<<20)
++		_ = r.Body.Close()
++		_ = rc.SetReadDeadline(time.Time{})
+ 	}
+ }
+ 
+@@ -415,14 +427,26 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+ 		rejectLocally(w, r, http.StatusUnauthorized, "unauthorized", "Invalid or missing proxy auth token")
+ 		return
+ 	}
++	if r.ContentLength > proxy.MaxBodySize {
++		rejectLocally(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body too large")
++		return
++	}
++	rc := http.NewResponseController(w)
++	_ = rc.SetReadDeadline(time.Now().Add(s.cfg.BodyUploadTimeout()))
+ 	raw, err := io.ReadAll(io.LimitReader(r.Body, proxy.MaxBodySize+1))
+ 	if err != nil {
+-		rejectLocally(w, r, http.StatusBadRequest, "bad_request", "Failed to read request body")
++		var ne net.Error
++		if errors.As(err, &ne) && ne.Timeout() {
++			rejectLocally(w, r, http.StatusRequestTimeout, "request_timeout", "Request body upload timed out")
++		} else if r.Context().Err() == nil {
++			rejectLocally(w, r, http.StatusBadRequest, "bad_request", "Failed to read request body")
++		}
+ 		return
+ 	}
+ 	if len(raw) > proxy.MaxBodySize {
+ 		rejectLocally(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body too large")
+ 		return
+ 	}
++	_ = rc.SetReadDeadline(time.Time{})
+ 	respondJSON(w, http.StatusOK, map[string]any{"input_tokens": proxy.EstimateInputTokens(raw)})
+ }

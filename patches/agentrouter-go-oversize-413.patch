@@ -1,0 +1,111 @@
+diff --git a/e2e/owl_oversize_research_test.go b/e2e/owl_oversize_research_test.go
+new file mode 100644
+index 0000000..5b6edd6
+--- /dev/null
++++ b/e2e/owl_oversize_research_test.go
+@@ -0,0 +1,61 @@
++package e2e
++
++import (
++	"bufio"
++	"encoding/json"
++	"fmt"
++	"net"
++	"net/http"
++	"testing"
++	"time"
++)
++
++// A client may wait for the response without sending an oversized body,
++// with or without Expect. The server must not wait for that upload forever.
++func TestOWLHeaderOnlyOversize(t *testing.T) {
++	for _, expect := range []bool{false, true} {
++		t.Run(fmt.Sprintf("expect=%v", expect), func(t *testing.T) {
++			env := newEnv(t, nil)
++			c, err := net.Dial("tcp", env.Addr)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer c.Close()
++			_ = c.SetDeadline(time.Now().Add(4 * time.Second))
++			h := ""
++			if expect {
++				h = "Expect: 100-continue\r\n"
++			}
++			_, err = fmt.Fprintf(c, "POST /v1/messages HTTP/1.1\r\nHost: %s\r\nContent-Length: 22020096\r\n%s\r\n", env.Addr, h)
++			if err != nil {
++				t.Fatal(err)
++			}
++			started := time.Now()
++			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
++			if err != nil {
++				t.Fatalf("response: %v", err)
++			}
++			defer resp.Body.Close()
++			if resp.StatusCode != http.StatusRequestEntityTooLarge {
++				t.Fatalf("status=%d", resp.StatusCode)
++			}
++			if time.Since(started) > time.Second {
++				t.Fatal("rejection was delayed waiting for the body")
++			}
++			var body struct {
++				Error struct {
++					Code string `json:"code"`
++				} `json:"error"`
++			}
++			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
++				t.Fatal(err)
++			}
++			if body.Error.Code != "payload_too_large" {
++				t.Fatalf("code=%q", body.Error.Code)
++			}
++			if env.Mock.PostCount() != 0 {
++				t.Fatal("unexpected upstream POST")
++			}
++		})
++	}
++}
+diff --git a/e2e/proxy_e2e_test.go b/e2e/proxy_e2e_test.go
+index 844f567..56db62a 100644
+--- a/e2e/proxy_e2e_test.go
++++ b/e2e/proxy_e2e_test.go
+@@ -1172,10 +1172,10 @@ func TestHealthOpenWithoutAuth(t *testing.T) {
+ 
+ func TestOversizedContentLength413(t *testing.T) {
+ 	env := newEnv(t, nil)
+-	big := strings.Repeat("x", 21*1024*1024)
+-	body := fmt.Sprintf(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":%q}]}`, big)
+-	req := fmt.Sprintf("POST /v1/messages HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+-		env.Addr, len(body), body)
++	// A client using Expect: 100-continue waits for the server's decision
++	// instead of writing a 21 MiB body after it has been rejected.
++	req := fmt.Sprintf("POST /v1/messages HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nExpect: 100-continue\r\n\r\n",
++		env.Addr, 21*1024*1024)
+ 	status, respBody := rawConn(t, env, req)
+ 	if status != http.StatusRequestEntityTooLarge {
+ 		t.Fatalf("status = %d, want 413", status)
+diff --git a/internal/proxy/handler.go b/internal/proxy/handler.go
+index 1a9acae..7acb71f 100644
+--- a/internal/proxy/handler.go
++++ b/internal/proxy/handler.go
+@@ -97,6 +97,10 @@ func (h *Handler) ServeProxy(w http.ResponseWriter, r *http.Request) {
+ 	if r.ContentLength > MaxBodySize {
+ 		h.Log.Info(fmt.Sprintf("%s %s -> REJECTED 413 (payload_too_large)", method, rawPath))
+ 		h.logEntry(logstore.Entry{Time: time.Now(), Level: logstore.LevelError, Path: rawPath, Format: string(streamFormat), Status: http.StatusRequestEntityTooLarge, Error: "payload_too_large"})
++		// The early-reject path has not called readBody, so install a bounded
++		// deadline before trying to drain a potentially stalled client.
++		drainTimeout := min(h.Cfg.BodyUploadTimeout(), 2*time.Second)
++		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(drainTimeout))
+ 		h.rejectBody(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body exceeds 20MB limit", true)
+ 		return
+ 	}
+@@ -252,6 +256,9 @@ func (h *Handler) readBody(r *http.Request, w http.ResponseWriter) ([]byte, int)
+ func (h *Handler) rejectBody(w http.ResponseWriter, r *http.Request, status int, code, message string, drain bool) {
+ 	w.Header().Set("Connection", "close")
+ 	h.respondJSON(w, status, errorBody(code, message))
++	// Send the rejection before draining: clients may be waiting for it
++	// (notably Expect: 100-continue), rather than uploading any body.
++	_ = http.NewResponseController(w).Flush()
+ 	if drain {
+ 		_, _ = io.CopyN(io.Discard, r.Body, 1<<20)
+ 	}

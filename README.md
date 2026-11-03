@@ -44,6 +44,12 @@
 
 ---
 
+## AgentRouter / OpenCode (optional)
+
+For a localhost Anthropic Messages bridge, Linux installation, configuration, compatibility details, and security limitations, see [AgentRouter / OpenCode bridge](docs/AGENTROUTER_OPENCODE.md). This is separate from OWL’s HTTP proxy pool. For the **original Go spoof proxy and original OpenCode proxy** installed as independent sidecars, see [upstream AgentRouter services](docs/AGENTROUTER_UPSTREAM_SERVICES.md). For a local health referee, mock compatibility lab and redacted request preview, see [AgentRouter local diagnostics](docs/AGENTROUTER_LOCAL_TOOLS.md).
+
+---
+
 ## Architecture
 
 ```
