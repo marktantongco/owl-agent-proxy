@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 import json
 
+import proxy_defense
 from proxy_defense import (
     CachedResponse,
     TokenBucket,
@@ -26,6 +27,8 @@ from proxy_defense import (
     FilterRule,
     FilterAction,
     chain,
+    nginx_camouflage_middleware,
+    basic_auth_camouflage_middleware,
 )
 
 
@@ -1503,6 +1506,171 @@ class TestMiddlewareIntegration(unittest.TestCase):
 
 
 # ── CLI tests ────────────────────────────────────────────────────────────
+
+
+# ── nginx camouflage middleware tests ───────────────────────────────────
+
+
+class TestNginxCamouflageMiddleware(unittest.TestCase):
+    """Tests for https_proxy-inspired nginx camouflage middleware."""
+
+    def test_nginx_camouflage_adds_server_header(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware()], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.headers.get("server"), "nginx/1.24.0")
+        asyncio.run(run())
+
+    def test_nginx_camouflage_fake_404(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"secret", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware(
+                    fake_404_paths=["/.hidden", "/admin"],
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com/.hidden",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.status, 404)
+            self.assertEqual(result.headers.get("server"), "nginx/1.24.0")
+        asyncio.run(run())
+
+    def test_nginx_camouflage_custom_server_name(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [nginx_camouflage_middleware(server_name="nginx/1.18.0")],
+                fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.headers.get("server"), "nginx/1.18.0")
+        asyncio.run(run())
+
+    def test_basic_auth_camouflage_forwards_header(self):
+        async def run():
+            captured_headers = {}
+
+            async def fake_handler(ctx):
+                captured_headers.update(ctx.headers or {})
+                return CachedResponse(
+                    status=200, content=b"ok", headers={},
+                    timestamp=time.time(), ttl=300, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [basic_auth_camouflage_middleware(
+                    auth_header="Basic dXNlcjpwYXNz",
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(
+                captured_headers.get("Authorization"),
+                "Basic dXNlcjpwYXNz",
+            )
+        asyncio.run(run())
+
+    def test_basic_auth_camouflage_401_www_authenticate(self):
+        async def run():
+            async def fake_handler(ctx):
+                return CachedResponse(
+                    status=401, content=b"unauthorized", headers={},
+                    timestamp=time.time(), ttl=0, protocol="http/1.1",
+                )
+
+            chain_handler = chain(
+                [basic_auth_camouflage_middleware(
+                    www_authenticate_realm="MyProxy",
+                )], fake_handler,
+            )
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            result = await chain_handler(ctx)
+            self.assertEqual(result.status, 401)
+            self.assertEqual(
+                result.headers.get("WWW-Authenticate"),
+                'Basic realm="MyProxy"',
+            )
+        asyncio.run(run())
+
+
+# ── protocol handler tests ─────────────────────────────────────────────
+
+
+class TestProtocolHandlers(unittest.TestCase):
+    """Tests for protocol handlers when dependencies are unavailable."""
+
+    def test_request_http2_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_http2(
+                    "GET", "http://example.com", None, {}, None,
+                )
+        asyncio.run(run())
+
+    def test_request_ja3_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_ja3(
+                    "GET", "http://example.com", None, {}, None,
+                )
+        asyncio.run(run())
+
+    def test_request_websocket_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_websocket("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_browser_raises_when_unavailable(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(RuntimeError):
+                await client._request_browser("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_stealth_requires_acknowledgement(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with self.assertRaises(proxy_defense.ProtocolUnavailable):
+                await client._request_stealth("http://example.com", None)
+        asyncio.run(run())
+
+    def test_request_stealth_raises_when_not_installed(self):
+        async def run():
+            client = ResilientClient(auto_load_proxies=False)
+            with patch("proxy_defense._stealth_acknowledged", return_value=True):
+                with patch("proxy_defense._load_stealth", return_value=None):
+                    with self.assertRaises(proxy_defense.ProtocolUnavailable):
+                        await client._request_stealth("http://example.com", None)
+        asyncio.run(run())
 
 
 class TestCLI(unittest.TestCase):
