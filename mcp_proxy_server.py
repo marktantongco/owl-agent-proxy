@@ -358,7 +358,10 @@ class MemoryBackend:
         self.enabled = enabled
         self.ttl_seconds = ttl_seconds
         self._db: Optional[Any] = None
-        self._db_path = db_path or (Path.home() / ".owl-agent" / "cache" / "memory.db")
+        # Resolved against OWL_AGENT_HOME, not Path.home(): a relocated install
+        # must keep its cache inside the install, and reading config from one
+        # home while writing state to another is a data-location bug.
+        self._db_path = db_path or (Path(_OWL_HOME) / "cache" / "memory.db")
 
     def _connect(self) -> Any:
         import sqlite3
@@ -486,7 +489,7 @@ class OwlMcpServer:
         mem_cfg = config.get("mcp_memory", {})
         if not mem_cfg or not mem_cfg.get("enabled"):
             return
-        db_path = Path.home() / ".owl-agent" / "cache" / "memory.db"
+        db_path = Path(_OWL_HOME) / "cache" / "memory.db"
         self.memory = MemoryBackend(
             enabled=True,
             db_path=db_path,
