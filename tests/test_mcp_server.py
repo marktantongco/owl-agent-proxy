@@ -377,6 +377,161 @@ class TestProxyBackend:
         await backend.stop()
 
 
+# ── websearch-skill tools ────────────────────────────────────────────────
+
+
+class TestWebSearchTools:
+    """Tests for websearch-skill MCP tool integration (offline, no network)."""
+
+    def test_web_search_missing_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_search", "arguments": {}}})
+        assert response["result"]["isError"] is True
+        assert "query required" in response["result"]["content"][0]["text"]
+
+    def test_web_search_with_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_search",
+                       "arguments": {"query": "test query"}}})
+        # websearch CLI may not be installed or may fail offline;
+        # the tool should not crash — it returns an error dict
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_web_search_with_engines_and_max_results(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_search",
+                       "arguments": {"query": "test",
+                                     "engines": "google,brave",
+                                     "max_results": 5}}})
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_web_fetch_missing_url(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_fetch", "arguments": {}}})
+        assert response["result"]["isError"] is True
+        assert "url required" in response["result"]["content"][0]["text"]
+
+    def test_web_fetch_with_url(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_fetch",
+                       "arguments": {"url": "https://example.com"}}})
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_web_open_missing_handle(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_open", "arguments": {}}})
+        assert response["result"]["isError"] is True
+        assert "handle required" in response["result"]["content"][0]["text"]
+
+    def test_web_open_with_handle(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_open",
+                       "arguments": {"handle": "abc123"}}})
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_arxiv_search_missing_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "arxiv_search", "arguments": {}}})
+        assert response["result"]["isError"] is True
+        assert "query required" in response["result"]["content"][0]["text"]
+
+    def test_arxiv_search_with_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "arxiv_search", "arguments": {"query": "test"}}})
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_github_search_missing_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "github_search", "arguments": {}}})
+        assert response["result"]["isError"] is True
+        assert "query required" in response["result"]["content"][0]["text"]
+
+    def test_github_search_with_query(self):
+        server, _ = make_server()
+        response = run_frame(server, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "github_search", "arguments": {"query": "test"}}})
+        result = response["result"]["structuredContent"]
+        assert "error" in result or "ok" in result or "raw" in result
+
+    def test_run_websearch_file_not_found(self):
+        async def run():
+            server, _ = make_server()
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       side_effect=FileNotFoundError("websearch")):
+                result = await server._run_websearch(["web-search", "test"])
+            assert "error" in result
+            assert "not installed" in result["error"]
+        asyncio.run(run())
+
+    def test_run_websearch_non_json_output(self):
+        async def run():
+            server, _ = make_server()
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate = AsyncMock(
+                return_value=(b"human readable output", b""))
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       return_value=mock_proc):
+                result = await server._run_websearch(["web-search", "test"])
+            assert result["ok"] is True
+            assert result["raw"] == "human readable output"
+        asyncio.run(run())
+
+    def test_run_websearch_json_output(self):
+        async def run():
+            server, _ = make_server()
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate = AsyncMock(
+                return_value=(b'{"ok": true, "results": []}', b""))
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       return_value=mock_proc):
+                result = await server._run_websearch(["web-search", "test"])
+            assert result["ok"] is True
+            assert result["results"] == []
+        asyncio.run(run())
+
+    def test_run_websearch_non_zero_exit(self):
+        async def run():
+            server, _ = make_server()
+            mock_proc = MagicMock()
+            mock_proc.returncode = 1
+            mock_proc.communicate = AsyncMock(
+                return_value=(b"", b"command failed"))
+            with patch("mcp_proxy_server.asyncio.create_subprocess_exec",
+                       return_value=mock_proc):
+                result = await server._run_websearch(["web-search", "test"])
+            assert "error" in result
+            assert "exit 1" in result["error"]
+        asyncio.run(run())
+
+
 # ── subprocess / real stdio ──────────────────────────────────────────────
 def _env(tmp_path):
     env = dict(os.environ)

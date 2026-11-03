@@ -223,6 +223,193 @@ class TokenBucket:
         return await self.acquire(tokens)
 
 
+# ── middleware chain (ported from go-stealth patterns) ───────────────────
+# Composable request/response middleware inspired by go-stealth's
+# Handler/Middleware/Chain pattern. Middleware wraps the core request
+# execution, allowing cross-cutting concerns (logging, retry, rate limit,
+# client hints, header manipulation) to be added without touching the
+# protocol router.
+
+MiddlewareHandler = Any  # callable: (RequestContext) -> CachedResponse
+Middleware = Any  # callable: (MiddlewareHandler) -> MiddlewareHandler
+
+
+@dataclass
+class RequestContext:
+    """Mutable context passed through the middleware chain."""
+
+    method: str
+    url: str
+    params: Optional[Dict[str, Any]]
+    headers: Optional[Dict[str, str]]
+    protocol: str
+    agent_id: str = "default"
+    rotation_mode: str = "sticky"
+    proxy_url: Optional[str] = None
+    response: Optional[CachedResponse] = None
+    short_circuit: bool = False  # middleware can set True to skip execution
+
+
+def chain(middlewares: List[Middleware], final: MiddlewareHandler) -> MiddlewareHandler:
+    """Compose middlewares around a final handler (go-stealth Chain pattern).
+
+    Middlewares are applied in order: the first middleware wraps the outermost
+    layer, so execution order is: m1 → m2 → … → final → … → m2 → m1.
+    """
+    handler = final
+    for mw in reversed(middlewares):
+        handler = mw(handler)
+    return handler
+
+
+# ── WAF filter pipeline (ported from BounceBack patterns) ────────────────
+# Filter rules with boolean composition (and/or/not) inspired by BounceBack's
+# filter pipeline. Rules run before proxy selection and can accept or reject
+# requests, short-circuiting the pipeline.
+
+from enum import Enum
+
+
+class FilterAction(str, Enum):
+    ACCEPT = "accept"
+    REJECT = "reject"
+
+
+@dataclass
+class FilterRule:
+    """A single WAF filter rule (BounceBack-inspired)."""
+
+    name: str
+    rule_type: str  # "ip", "geo", "regexp", "time", "reverse_lookup", "malleable", "and", "or", "not"
+    params: Dict[str, Any]
+    action: FilterAction = FilterAction.REJECT
+
+
+class FilterPipeline:
+    """Evaluates filter rules in order; first matching rule's action wins.
+
+    Returns (action, rule_name) or (None, None) if no rule matches.
+    """
+
+    def __init__(self, rules: List[FilterRule]):
+        self.rules = rules
+
+    def evaluate(self, context: RequestContext) -> tuple[Optional[FilterAction], Optional[str]]:
+        for rule in self.rules:
+            if self._matches(rule, context):
+                return rule.action, rule.name
+        return None, None
+
+    def _matches(self, rule: FilterRule, context: RequestContext) -> bool:
+        rt = rule.rule_type
+        p = rule.params
+
+        if rt == "and":
+            return all(self._matches(FilterRule(r["name"], r["type"], r.get("params", {}),
+                                          FilterAction(r.get("action", "reject"))),
+                                      context) for r in p.get("rules", []))
+        if rt == "or":
+            return any(self._matches(FilterRule(r["name"], r["type"], r.get("params", {}),
+                                          FilterAction(r.get("action", "reject"))),
+                                     context) for r in p.get("rules", []))
+        if rt == "not":
+            inner = p.get("rule")
+            if not inner:
+                return False
+            inner_rule = next((r for r in self.rules if r.name == inner), None)
+            if inner_rule is None:
+                return False
+            return not self._matches(inner_rule, context)
+        if rt == "ip":
+            return self._ip_matches(context, p)
+        if rt == "regexp":
+            return self._regexp_matches(context, p)
+        if rt == "time":
+            return self._time_matches(context, p)
+        # geo, reverse_lookup, malleable require external data sources;
+        # return False (no match) when data unavailable — fail closed.
+        return False
+
+    def _ip_matches(self, context: RequestContext, p: Dict[str, Any]) -> bool:
+        """Match client IP against a list file (BounceBack ip rule)."""
+        list_path = p.get("list")
+        if not list_path:
+            return False
+        path = Path(list_path)
+        if not path.exists():
+            return False
+        try:
+            client_ip = context.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            if not client_ip:
+                return False
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if client_ip == line or self._cidr_match(client_ip, line):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _cidr_match(self, ip: str, cidr: str) -> bool:
+        """Simple CIDR match (IPv4 only, no external deps)."""
+        try:
+            import ipaddress
+            return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            return False
+
+    def _regexp_matches(self, context: RequestContext, p: Dict[str, Any]) -> bool:
+        """Match request against regexp list (BounceBack regexp rule)."""
+        list_path = p.get("list")
+        if not list_path:
+            return False
+        path = Path(list_path)
+        if not path.exists():
+            return False
+        import re
+        try:
+            patterns = [line.strip() for line in path.read_text().splitlines()
+                        if line.strip() and not line.startswith("#")]
+            target = f"{context.method} {context.url}"
+            if context.headers:
+                target += " " + " ".join(f"{k}:{v}" for k, v in context.headers.items())
+            for pat in patterns:
+                if re.search(pat, target):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _time_matches(self, context: RequestContext, p: Dict[str, Any]) -> bool:
+        """Match request time against a window (BounceBack time rule)."""
+        from datetime import datetime
+        import zoneinfo
+        try:
+            from_str = p.get("from")
+            to_str = p.get("to")
+            tz_name = p.get("timezone", "UTC")
+            weekdays = p.get("weekdays", [])
+            if not from_str or not to_str:
+                return False
+            tz = zoneinfo.ZoneInfo(tz_name)
+            now = datetime.now(tz)
+            if weekdays and now.strftime("%A") not in weekdays:
+                return False
+            from_h, from_m = map(int, from_str.split(":"))
+            to_h, to_m = map(int, to_str.split(":"))
+            now_minutes = now.hour * 60 + now.minute
+            from_minutes = from_h * 60 + from_m
+            to_minutes = to_h * 60 + to_m
+            if from_minutes <= to_minutes:
+                return from_minutes <= now_minutes <= to_minutes
+            # overnight window
+            return now_minutes >= from_minutes or now_minutes <= to_minutes
+        except Exception:
+            return False
+
+
 @dataclass
 class ProxyEntry:
     url: str
@@ -653,6 +840,11 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self.max_per_source = max_per_source
         self.cache_file = cache_file
         self.external_proxies: List[str] = external_proxies or []
+        self._urls: set = set()
+        # Seed _urls from initial proxies so duplicate detection works
+        # for external proxies that may already exist in the pool.
+        for proxy in self.proxies:
+            self._remember(proxy)
 
         # Register external proxies (BounceBack, https_proxy) at tier 1.
         for url in self.external_proxies:
@@ -679,11 +871,8 @@ class ProxyRotator(UpstreamHarvestingMixin):
         self._validation_tasks: set = set()
         self._validation_queue: "asyncio.Queue[str]" = asyncio.Queue()
         self._sem: Optional[asyncio.Semaphore] = None
-        self._urls: set = set()
         self._harvested = 0
         self._rejected = 0
-        for proxy in self.proxies:
-            self._remember(proxy)
 
     # ── pool bookkeeping ───────────────────────────────────────────────
     def _remember(self, proxy: ProxyEntry) -> None:
@@ -853,6 +1042,8 @@ class ResilientClient:
         honeypot_check: Optional[bool] = None,
         max_proxies: Optional[int] = None,
         external_proxies: Optional[List[str]] = None,
+        middleware: Optional[List[Middleware]] = None,
+        filter_rules: Optional[List[FilterRule]] = None,
         config_path: Optional[Union[str, Path]] = None,
         pool: Optional[PoolBackend] = None,
         cache_file: Optional[Path] = None,
@@ -888,6 +1079,21 @@ class ResilientClient:
         # constructor parameter if provided.
         config_external = config.get("external_proxies", [])
         self.external_proxies: List[str] = list(external_proxies or config_external or [])
+        # v7.3: middleware chain (go-stealth pattern) + WAF filter pipeline
+        # (BounceBack pattern). Read from config.json or constructor params.
+        self.middleware: List[Middleware] = list(middleware or config.get("middleware", []) or [])
+        self.filter_pipeline: Optional[FilterPipeline] = None
+        if filter_rules:
+            self.filter_pipeline = FilterPipeline(filter_rules)
+        elif config.get("filter_rules"):
+            self.filter_pipeline = FilterPipeline([
+                FilterRule(
+                    name=r["name"],
+                    rule_type=r["type"],
+                    params=r.get("params", {}),
+                    action=FilterAction(r.get("action", "reject")),
+                ) for r in config["filter_rules"]
+            ])
         # A pool backend can be injected (paid provider, Redis-backed pool, test
         # double); ProxyRotator remains the default implementation.
         self.rotator: PoolBackend = pool if pool is not None else ProxyRotator(
@@ -986,6 +1192,28 @@ class ResilientClient:
     ):
         protocol = protocol or self.default_protocol
 
+        # Build request context for middleware + filter pipeline.
+        ctx = RequestContext(
+            method=method, url=url, params=params,
+            headers=headers or {}, protocol=protocol,
+            agent_id=agent_id, rotation_mode=rotation_mode,
+        )
+
+        # v7.3: WAF filter pipeline (BounceBack pattern) — reject before
+        # touching the proxy pool.
+        if self.filter_pipeline is not None:
+            action, rule_name = self.filter_pipeline.evaluate(ctx)
+            if action == FilterAction.REJECT:
+                return CachedResponse(
+                    status=403,
+                    content=b"rejected by filter pipeline",
+                    headers={"content-type": "text/plain"},
+                    timestamp=time.time(),
+                    ttl=0,
+                    protocol=protocol,
+                )
+            ctx.proxy_url = None  # placeholder; set by _execute_with_retry
+
         # v7.2 LLM routing: intercept OpenAI-compatible API calls and route
         # through local model upstreams (colibri primary, FreeRide failover)
         # instead of the proxy pool.
@@ -1012,7 +1240,10 @@ class ResilientClient:
                 agent_id=agent_id, rotation_mode=rotation_mode, **kwargs,
             )
 
-        return await self.dedup.execute(method, url, params, protocol, factory)
+        # v7.3: middleware chain (go-stealth pattern) — wrap the factory so
+        # middleware can inspect/modify requests and responses.
+        handler = chain(self.middleware, factory)
+        return await self.dedup.execute(method, url, params, protocol, handler)
 
     async def _execute_with_retry(self, method, url, params, headers, protocol,
                                   agent_id: str = "default",

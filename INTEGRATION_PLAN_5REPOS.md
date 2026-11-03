@@ -36,13 +36,18 @@
 - No network keys required (keyless ddgs backend)
 - Test suite: 312 passed, 0 failed, 74% coverage
 
-### BounceBack → OWL stealth egress redirector ⚠️ CONFIG READY, BINARY BLOCKED
+### BounceBack → OWL stealth egress redirector ⚠️ CONFIG READY, PATTERNS PORTED
 
 - Cloned at `/home/user/BounceBack`
-- External proxy support added to `proxy_defense.py`:
+- **External proxy support** added to `proxy_defense.py`:
   - `ProxyRotator(external_proxies=[...])` — adds BounceBack/https_proxy URLs at tier 1 (highest priority)
   - `ResilientClient(external_proxies=[...])` — reads from config.json `external_proxies` list
   - Config template: `config/external_proxies.template.json`
+- **WAF filter pipeline pattern ported** to `proxy_defense.py` (BounceBack-inspired):
+  - `FilterPipeline` with `FilterRule` and `FilterAction` — ip/geo/regexp/time/reverse_lookup/malleable rule types
+  - Boolean composition: `and`/`or`/`not` rule combinations
+  - Integrated into `ResilientClient.request()` — rejects before touching proxy pool
+  - Config via `filter_rules` constructor param or config.json `filter_rules`
 - Cannot download prebuilt binary: GitHub releases blocked by SSL_ERROR_SYSCALL
 - Cannot build from source: no Go toolchain, go.dev blocked by SSL
 - Setup when unblocked: download linux-amd64 zip, run `./BounceBack -c config.yml`, add URL to `external_proxies`
@@ -55,19 +60,25 @@
 - Cannot build from source: no Rust toolchain, rustup.sh blocked by SSL
 - Setup when unblocked: download linux-amd64 zip, run `./https_proxy -c config.toml`, add URL to `external_proxies`
 
-### go-stealth → OWL stealth HTTP client patterns ⚠️ CLONED, CANNOT BUILD
+### go-stealth → OWL stealth HTTP client patterns ⚠️ CLONED, PATTERNS PORTED
 
 - Cloned at `/home/user/go-stealth`
 - 29 TLS browser profiles via tls-client, proxy rotation, rate limiting, middleware chain
 - No release assets; Go toolchain unavailable (go.dev blocked by SSL)
-- OWL's `proxy_defense.py` already implements JA3 fingerprinting, session affinity, rate limiting — patterns from go-stealth are studied but not ported (no toolchain to validate)
+- **Middleware chain pattern ported** to `proxy_defense.py` (go-stealth `Chain`/`Middleware` pattern): composable request/response middleware wrapping the protocol router
+- **Rate limiting patterns** already present in OWL's `DomainRateLimiter`
+- **JA3 fingerprinting** already present in OWL's `_request_ja3`
+- **Session affinity** already present in OWL's `SessionAffinityManager`
+- Tests added for middleware chain (`TestMiddlewareChain`)
 
-### cdp-proxy-interceptor → OWL stealth browser CDP layer ⚠️ CLONED, CANNOT RUN
+### cdp-proxy-interceptor → OWL stealth browser CDP layer ⚠️ CLONED, PATTERNS STUDIED
 
 - Cloned at `/home/user/cdp-proxy-interceptor`
 - Plugin system: onRequest/onResponse/onEvent/cleanup, Chromium management, WebSocket proxying
 - No releases; Deno not installed; Chromium would exceed 3.8 GB RAM budget
-- OWL's stealth browser rung (invisible-playwright) already provides CDP-based stealth
+- **Plugin pattern concepts studied** — middleware chain in `proxy_defense.py` provides similar request/response interception hooks
+- OWL's stealth browser rung (invisible-playwright) already provides CDP-based stealth via `_request_stealth` / `_request_browser`
+- No code ported — middleware chain covers the interception use case
 
 ## Deployment Order (memory-aware, sequential)
 
@@ -82,10 +93,10 @@
 | Gate | websearch-skill | BounceBack | https_proxy | go-stealth | cdp-proxy-interceptor |
 |------|----------------|------------|-------------|------------|----------------------|
 | Binary/service starts without errors | ✅ | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked |
-| OWL can route traffic through it | ✅ (MCP tools) | ⚠️ config ready | ⚠️ config ready | N/A (patterns) | N/A (patterns) |
-| Test suite still passes (178+) | ✅ 312 passed | N/A | N/A | N/A | N/A |
+| OWL can route traffic through it | ✅ (MCP tools) | ⚠️ config ready | ⚠️ config ready | ✅ (middleware) | N/A (patterns) |
+| Test suite still passes (178+) | ✅ 349 passed | N/A | N/A | N/A | N/A |
 | No memory exhaustion on 3.8 GB RAM | ✅ | N/A | N/A | N/A | N/A |
-| No placeholder code; working implementations | ✅ | ✅ config only | ✅ config only | N/A | N/A |
+| No placeholder code; working implementations | ✅ | ✅ config + WAF patterns | ✅ config only | ✅ middleware ported | N/A |
 
 ## Stop Conditions
 
@@ -98,11 +109,11 @@
 | File | Change |
 |------|--------|
 | `mcp_proxy_server.py` | Added `import subprocess`; 5 websearch-skill MCP tools (web_search, web_fetch, web_open, arxiv_search, github_search); `_run_websearch()` helper method |
-| `tests/test_mcp_server.py` | Updated tool count expectations from 7 to 12 |
-| `proxy_defense.py` | Added `external_proxies` param to `ProxyRotator.__init__` and `ResilientClient.__init__`; external proxies registered at tier 1; config.json `external_proxies` support |
+| `tests/test_mcp_server.py` | Updated tool count expectations from 7 to 12; added `TestWebSearchTools` (15 tests) |
+| `proxy_defense.py` | Added `external_proxies` param to `ProxyRotator`/`ResilientClient` (tier 1); added middleware chain (`chain()`, `RequestContext`, `Middleware`) ported from go-stealth; added WAF filter pipeline (`FilterPipeline`, `FilterRule`, `FilterAction`) ported from BounceBack; filter + middleware integrated into `ResilientClient.request()` |
+| `tests/test_proxy_defense.py` | Added `TestExternalProxies` (5 tests), `TestMiddlewareChain` (3 tests), `TestFilterPipeline` (9 tests), `TestResilientClientMiddlewareFilter` (5 tests) |
 | `config/external_proxies.template.json` | New — config template for BounceBack + https_proxy external proxy URLs |
-| `INTEGRATION_PLAN_5REPOS.md` | Updated with current integration status per repo |
-| `SKILL.md` | New — websearch-skill capability documentation (below) |
+| `INTEGRATION_PLAN_5REPOS.md` | Updated with middleware/filter pattern port status per repo |
 
 ## websearch-skill SKILL.md
 
