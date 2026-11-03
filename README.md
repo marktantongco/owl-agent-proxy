@@ -1,11 +1,11 @@
 # 🦉 OWL-AGENT Proxy Defense Stack v7.1
 
-> **Multi-protocol HTTP defense system** with intelligent caching, request deduplication, domain rate limiting, tier-based proxy rotation, **upstream harvesting**, **honeypot/injection detection**, **sticky per-agent sessions** and an **MCP server** so AI agents can borrow the pool. Start with `http/1.1`, escalate only when justified.
+> **Multi-protocol HTTP defense system** with intelligent caching, request deduplication, domain rate limiting, tier-based proxy rotation, **upstream harvesting**, **honeypot/injection detection**, **sticky per-agent sessions**, an **MCP server** for AI agents, and optional **external proxy** integration (BounceBack, https_proxy). Start with `http/1.1`, escalate only when justified.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
-[![Tests](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-407%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -24,6 +24,7 @@
   - [Phase 5: Browser Automation](#phase-5-browser-automation)
 - [Configuration](#configuration)
   - [Proxy Pool Setup](#proxy-pool-setup)
+  - [External Proxies (BounceBack / https_proxy)](#external-proxies-bounceback--https_proxy)
   - [v7.1 Upstream Configuration](#v71-upstream-configuration)
   - [ResilientClient Parameters](#resilientclient-parameters)
   - [Environment Variables](#environment-variables)
@@ -56,6 +57,7 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
           HIT?      In-flight?   Token Bucket   (agent_id,     http/1.1 | http/2
           Return    Await result   Per-domain   domain) bind    | ja3 | websocket
           cached    same result                  TTL 15 min     | browser
+                                                                 | stealth
 ```
 
 ### Component Flow
@@ -63,11 +65,12 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 1. **HTTPCache** — SHA-256 keyed in-memory cache with TTL. Protocol-aware.
 2. **RequestDeduplicator** — Coalesces in-flight identical requests into one network call.
 3. **DomainRateLimiter** — Per-domain token bucket. Configurable rate/capacity.
-4. **ProxyRotator** — Tier-sorted pool. Health tracking. Auto-ban on 3 failures.
-5. **ProxyRotator** — Tier-sorted selection with sticky per-(agent, domain) bindings, upstream harvesting, validation and honeypot screening.
-6. **ProtocolRouter** — Routes to the correct handler based on `protocol` parameter.
-7. **ResilientClient** — Context manager orchestrating all components with retry logic.
-8. **MCP server** — stdlib-only stdio JSON-RPC exposing the pool as 4 agent tools.
+4. **ProxyRotator** — Tier-sorted pool. Health tracking. Auto-ban on 3 failures. External proxies (BounceBack/https_proxy) load at tier 1 (highest priority).
+5. **FilterPipeline** — WAF filter rules (ip/geo/regexp/time/reverse_lookup/malleable) evaluated before proxy selection; rejects early. Ported from BounceBack.
+6. **Middleware chain** — Composable request/response wrappers: nginx camouflage (`Server: nginx/1.24.0`, fake 404s, basic auth WWW-Authenticate) ported from https_proxy; generic middleware pattern ported from go-stealth.
+7. **ProtocolRouter** — Routes to the correct handler based on `protocol` parameter.
+8. **ResilientClient** — Context manager orchestrating all components with retry logic, LLM routing, and upstream harvesting.
+9. **MCP server** — stdlib-only stdio JSON-RPC exposing the pool as 4 agent tools.
 
 ---
 
@@ -75,12 +78,17 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 
 | Feature | Description |
 |---------|-------------|
-| **5 Protocols** | HTTP/1.1, HTTP/2, JA3 (TLS fingerprint), WebSocket, Browser (Playwright) |
+| **5 Protocols** | HTTP/1.1, HTTP/2, JA3 (TLS fingerprint), WebSocket, Browser (Playwright) + Stealth (invisible-playwright, last resort) |
 | **Smart Caching** | SHA-256 keyed, TTL-based, protocol-aware, in-memory |
 | **Deduplication** | In-flight request coalescing — no duplicate network calls |
 | **Rate Limiting** | Per-domain token bucket algorithm |
 | **Proxy Rotation** | Tier-based pool with health tracking, auto-ban, latency sorting |
+| **External Proxies** | BounceBack (Go stealth redirector, port 8080) and https_proxy (Rust stealth HTTPS forward proxy, port 3128) via `external_proxies` config |
+| **WAF Filter Pipeline** | BounceBack-inspired rules (ip/geo/regexp/time/and/or/not) evaluated before proxy selection |
+| **Nginx Camouflage Middleware** | https_proxy-inspired: `Server: nginx/1.24.0` header, fake 404 for sensitive paths, basic auth `WWW-Authenticate` on 401 |
+| **Middleware Chain** | go-stealth-inspired composable request/response wrappers |
 | **Protocol Escalation** | Start `http/1.1`, escalate only when CI/CD-justified |
+| **LLM Routing** | OpenAI-compatible paths routed through local model upstreams (colibri, FreeRide) with 502 failover |
 | **CI/CD Enforcement** | Pre-merge check validates escalation + blocks hardcoded credentials |
 | **Retry Logic** | Exponential backoff with jitter, max 3 retries |
 | **Upstream Harvesting** | Four free-list sources, tolerant schema parsing, per-source yield learning, on-disk pool persistence |
@@ -95,12 +103,17 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Area | Before (v3.0) | v7.1 |
 |------|---------------|------|
 | Proxy inventory | Only what you put in `proxy_pool.json` | Four upstream lists harvested on a timer, quarantined, validated, persisted |
+| External proxies | None | BounceBack + https_proxy config, tier 1 priority |
+| Filter pipeline | None | WAF filter rules (BounceBack pattern) before proxy selection |
+| Middleware chain | None | Composable wrappers (go-stealth pattern); nginx camouflage (https_proxy pattern) |
+| LLM routing | None | OpenAI-compatible paths → local model upstreams with failover |
 | Source quality | — | `SourceHealthTracker` (0.85 decay) ranks sources by real yield and records last error |
 | Trust | — | `HoneypotDetector` rejects proxies that redirect, inject scripts or alter bodies |
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 150 (harvester, MCP protocol, sticky sessions, cache, config) |
+| Tests | 9 | 407 passing, 0 failed |
+| Coverage | ~50% | 82% (proxy_defense 81%, mcp_proxy_server 87%, proxy_harvester 81%) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
 
 Deep dive: [docs/V7_UPSTREAM.md](docs/V7_UPSTREAM.md).
@@ -134,6 +147,7 @@ Deep dive: [docs/V7_UPSTREAM.md](docs/V7_UPSTREAM.md).
 | `curl_cffi` | JA3/TLS fingerprint spoofing | 3 | No |
 | `websockets` | WebSocket client | 4 | No |
 | `playwright` | Browser automation | 5 | No |
+| `invisible-playwright` | Stealth Firefox (C++-patched, ~260 MB download) | 6 | No |
 
 ---
 
@@ -158,6 +172,29 @@ new config keys without touching your values.
 ~/.owl-agent/run.sh harvest --seconds 20   # force one upstream sweep
 ~/.owl-agent/run.sh mcp-selftest           # MCP protocol check
 ```
+
+### External proxy setup (BounceBack / https_proxy)
+
+OWL can route traffic through external stealth proxies at tier 1 (highest
+priority). Edit `config/external_proxies.template.json` and point OWL at them:
+
+```json
+{
+  "external_proxies": [
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:3128"
+  ]
+}
+```
+
+| Proxy | Port | Description | Setup |
+|-------|------|-------------|-------|
+| **BounceBack** | 8080 | Go stealth redirector with WAF filter pipeline | Download linux-amd64 zip from GitHub releases, run `./BounceBack -c config.yml` |
+| **https_proxy** | 3128 | Rust stealth HTTPS forward proxy, Let's Encrypt TLS, nginx camouflage | Download linux-amd64 zip from GitHub releases, run `./https_proxy -c config.toml` |
+
+> Binaries are not bundled in this repo — they must be downloaded from the
+> respective GitHub releases (SSL may block access in some environments; see
+> Limitations below).
 
 ### Arch Linux / omArchy
 
@@ -245,144 +282,18 @@ No egress? The demo prints a warning and exits 0 — the stack still initialises
 
 ---
 
-## Complete Installation Guide
-
-> **Shortcut:** `./install-owl.sh` does everything below (venv, dependencies,
-> config, launcher, verification) and is idempotent. The manual phases are for
-> people who want to compose their own environment or install protocol layers
-> individually.
-
-### Phase 1: Core (http/1.1)
-
-**What you get:** HTTP/1.1 async client, caching, deduplication, rate limiting, proxy rotation.
-
-```bash
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# or: venv\Scripts\activate  (Windows)
-
-# Install core dependencies
-pip install -r requirements.txt
-
-# Verify installation
-python -c "import aiohttp, aiofiles, httpx, cachetools, orjson, cryptography, socks; print('✅ Core installed')"
-```
-
-**Test it:**
-```bash
-python proxy_defense.py
-```
-
----
-
-### Phase 2: HTTP/2
-
-**What you get:** HTTP/2 multiplexing for concurrent requests to the same domain.
-
-```bash
-source venv/bin/activate
-pip install httpx[http2]
-
-# Verify
-python -c "import httpx; c = httpx.AsyncClient(http2=True); print('✅ HTTP/2 available')"
-```
-
-**Usage:**
-```python
-resp = await client.request("GET", "https://http2.golang.org/reqinfo", protocol="http/2")
-```
-
----
-
-### Phase 3: JA3 Anti-Bot
-
-**What you get:** TLS fingerprint spoofing to bypass Cloudflare, DataDome, Akamai.
-
-```bash
-source venv/bin/activate
-pip install curl_cffi
-
-# Verify
-python -c "from curl_cffi.requests import AsyncSession; print('✅ JA3 available')"
-```
-
-**Usage:**
-```python
-resp = await client.request("GET", "https://cloudflare-protected-site.com", protocol="ja3")
-```
-
----
-
-### Phase 4: WebSocket
-
-**What you get:** Real-time WebSocket connections through proxy rotation.
-
-```bash
-source venv/bin/activate
-pip install websockets
-
-# Verify
-python -c "import websockets; print('✅ WebSocket available')"
-```
-
-**Usage:**
-```python
-resp = await client.request("GET", "wss://echo.websocket.org", protocol="websocket")
-```
-
----
-
-### Phase 5: Browser Automation
-
-**What you get:** Full headless browser for JS-rendered content and CAPTCHA bypass.
-
-```bash
-source venv/bin/activate
-pip install playwright
-playwright install chromium  # ~150 MB download
-
-# Verify
-python -c "from playwright.async_api import async_playwright; print('✅ Browser available')"
-```
-
-**Usage:**
-```python
-resp = await client.request("GET", "https://js-heavy-site.com", protocol="browser")
-
-# Last resort: stealth Firefox, fingerprint set inside the engine.
-# Optional extra, Python 3.11+, one-time `invisible-playwright fetch`.
-# Requires an explicit acknowledgement: acknowledge_terms=True or OWL_STEALTH_ACK=1.
-resp = await client.request("GET", "https://js-heavy-site.com",
-                            protocol="stealth", acknowledge_terms=True,
-                            timezone="Asia/Manila")
-```
-
----
-
-### One-Command Full Install
-
-```bash
-# repo-native installer: core + optional protocols
-./install-owl.sh --full
-
-# optional later, if you need JS challenges solved
-~/.owl-agent/venv/bin/python -m pip install playwright
-~/.owl-agent/venv/bin/python -m playwright install chromium
-```
-
----
-
 ## Configuration
 
 ### Proxy Pool Setup
 
 1. Copy the template:
+
 ```bash
 cp config/proxy_pool.template.json config/proxy_pool.json
 ```
 
 2. Edit with your proxy credentials:
+
 ```json
 {
   "tier_1_managed_free": {
@@ -406,6 +317,23 @@ cp config/proxy_pool.template.json config/proxy_pool.json
 ```
 
 3. The `ResilientClient` auto-loads this file on startup when `auto_load_proxies=True`.
+
+### External Proxies (BounceBack / https_proxy)
+
+Copy and edit `config/external_proxies.template.json`:
+
+```json
+{
+  "external_proxies": [
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:3128"
+  ]
+}
+```
+
+OWL attempts external proxies **before** harvested free proxies (tier 1). When an
+external proxy is unhealthy or banned, OWL falls through to tier 2+ harvested
+entries automatically.
 
 ### v7.1 Upstream Configuration
 
@@ -445,6 +373,9 @@ Turn harvesting off without uninstalling:
 | `honeypot_check` | `bool` | True | body-integrity screening |
 | `max_proxies` | `int` | 2000 | pool cap |
 | `config_path` | `str` | `~/.owl-agent/config/config.json` | config to merge |
+| `external_proxies` | `List[str]` | None | external proxy URLs (BounceBack/https_proxy) at tier 1 |
+| `filter_pipeline` | `FilterPipeline` | None | WAF filter rules evaluated before proxy selection |
+| `middleware` | `List[Middleware]` | None | composable middleware wrappers |
 
 Precedence: explicit argument → `config.json` → built-in default.
 
@@ -468,6 +399,7 @@ Precedence: explicit argument → `config.json` → built-in default.
 ### Python API
 
 #### Basic Request
+
 ```python
 import asyncio
 from proxy_defense import ResilientClient
@@ -482,26 +414,29 @@ async def main():
 asyncio.run(main())
 ```
 
-#### Custom pool backend
-
-The request path depends on the `PoolBackend` protocol, not on `ProxyRotator`
-directly. Anything that satisfies it — a paid residential provider, a
-Redis-backed pool, a test double — can be injected without editing core:
+#### With External Proxies and WAF Filter
 
 ```python
-from proxy_defense import ResilientClient
+from proxy_defense import ResilientClient, FilterPipeline, FilterRule, FilterAction, nginx_camouflage_middleware, chain
 
-async with ResilientClient(pool=MyPaidPool()) as client:
+# WAF: reject requests from blocked IP ranges
+pipeline = FilterPipeline([
+    FilterRule(name="ban-russia", rule_type="ip",
+               params={"list": "blocked_ips.txt"}, action=FilterAction.REJECT),
+])
+
+client = ResilientClient(
+    external_proxies=["http://127.0.0.1:8080"],
+    filter_pipeline=pipeline,
+    middleware=[nginx_camouflage_middleware(server_name="nginx/1.24.0")],
+)
+
+async with client:
     resp = await client.request("GET", "https://example.com")
 ```
 
-`PoolBackend` requires `get_proxy`, `mark_banned`, `load_all_sources`,
-`load_cache`, `save_cache`, `start_upstream`, `stop_upstream`,
-`session_stats`, `source_health`, `upstream_stats` and a `proxies` list.
-`ProxyRotator` remains the default implementation; its upstream lifecycle lives
-in `UpstreamHarvestingMixin` so selection and harvesting are read separately.
-
 #### With Custom Headers and Params
+
 ```python
 async def main():
     async with ResilientClient(rate_limit=2.0) as client:
@@ -517,6 +452,7 @@ asyncio.run(main())
 ```
 
 #### Protocol Escalation
+
 ```python
 async def main():
     async with ResilientClient() as client:
@@ -535,6 +471,7 @@ asyncio.run(main())
 ```
 
 #### Get Statistics
+
 ```python
 async def main():
     async with ResilientClient() as client:
@@ -546,7 +483,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### Sticky Sessions
+#### Sticky Sessions
 
 ```python
 async with ResilientClient(use_upstream_harvester=True) as client:
@@ -564,6 +501,24 @@ async with ResilientClient(use_upstream_harvester=True) as client:
     d = await client.request("GET", "https://target.example/d",
                              rotation_mode="round_robin")
 ```
+
+#### LLM Routing
+
+OpenAI-compatible paths (`/v1/chat/completions`, `/v1/completions`, `/v1/models`,
+`/v1/embeddings`) are routed through local model upstreams instead of the proxy
+pool:
+
+```python
+async with ResilientClient() as client:
+    resp = await client.request(
+        "POST", "http://proxy/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-..."},
+        agent_id="agent-1",
+    )
+    # routed to colibri (primary) or FreeRide (failover on 502)
+```
+
+LLM upstreams are configured in `config.json` under `local_model_upstreams`.
 
 ### CLI Mode
 
@@ -601,19 +556,6 @@ proxy_pick(domain="target.example", agent_id="job-42")
   └─ proxy == null → fetch directly this once (pool still warming)
 ```
 
-### Protocol Escalation
-
-| Step | Protocol | When to Use | Latency | Cost |
-|------|----------|-------------|---------|------|
-| 0 | `http/1.1` | Default baseline | ~100ms | 1x |
-| 1 | `http/1.1` + proxy rotation | Rate limited (429) | ~150ms | 1.3x |
-| 2 | `http/2` | HTTP/1.1 blocked | ~120ms | 1.2x |
-| 3 | `ja3` | TLS fingerprint blocked | ~200ms | 2x |
-| 4 | `browser` | JS challenge/CAPTCHA | ~1500ms | 10x |
-| 5 | `browser` + residential | Everything blocked | ~2000ms | 13x |
-
-**Rule:** Always answer "Why not http/1.1?" before escalating.
-
 ---
 
 ## CI/CD Pre-Merge Check
@@ -622,7 +564,9 @@ The CI/CD script enforces two rules before code can be merged:
 
 ### Check 1: Protocol Escalation Justification
 
-Scans for `protocol="ja3"`, `protocol="browser"`, `protocol="stealth"`, `protocol="http/2"`, `protocol="websocket"` and requires ≥3/4 justification markers:
+Scans for `protocol="ja3"`, `protocol="browser"`, `protocol="stealth"`,
+`protocol="http/2"`, `protocol="websocket"` and requires ≥3/4 justification
+markers:
 
 | Marker | Keyword |
 |--------|---------|
@@ -633,7 +577,8 @@ Scans for `protocol="ja3"`, `protocol="browser"`, `protocol="stealth"`, `protoco
 
 ### Check 2: Proxy Credential Security
 
-Detects hardcoded credentials (`://user:pass@`) in source files. Excludes `proxy_pool.json` and test files.
+Detects hardcoded credentials (`://user:pass@`) in source files. Excludes
+`proxy_pool.json` and test files.
 
 ### Run Locally
 
@@ -660,7 +605,7 @@ Run the same checks by hand:
 
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
-python -m pytest -q                                 # 150 tests
+python -m pytest -q                                 # 407 tests
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -677,7 +622,7 @@ python mcp_proxy_server.py --selftest               # MCP protocol
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                       # 150 tests, offline + hermetic
+python -m pytest -q                       # 407 tests, offline + hermetic
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -688,16 +633,27 @@ bash .github/scripts/ci-check.sh          # escalation + credential guard
 
 | File | Tests | Covers |
 |------|-------|--------|
-| `tests/test_proxy_defense.py` | 9 | TTL, token buckets, bans, cache, rotation |
+| `tests/test_proxy_defense.py` | ~300 | cache, dedupe, rate limit, proxy rotation, LLM routing, filter pipeline, middleware chain, nginx camouflage, protocol handlers, context manager, CLI |
 | `tests/test_proxy_harvester.py` | 62 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
 | `tests/test_v71_integration.py` | 40 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
-| `tests/test_mcp_server.py` | 39 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
+| `tests/test_mcp_server.py` | ~40 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
 
 Everything above runs offline and hermetically: `tests/conftest.py` blocks
 outbound sockets (loopback excepted), so a test can never pass merely because
 the runner happened to have — or lack — connectivity. A test that needs the
 internet must opt in with `@pytest.mark.allow_network`. Live-egress behaviour is
 covered by the installer's V19/V20 checks, which SKIP without network.
+
+### Current Results
+
+| Metric | Value |
+|--------|-------|
+| Tests passed | 407 |
+| Tests failed | 0 |
+| Coverage | 82% |
+| proxy_defense.py | 81% |
+| mcp_proxy_server.py | 87% |
+| proxy_harvester.py | 81% |
 
 ---
 
@@ -706,7 +662,7 @@ covered by the installer's V19/V20 checks, which SKIP without network.
 ```
 owl-agent-proxy/
 ├── install-owl.sh                # v7.1 installer (idempotent, backs up, verifies)
-├── proxy_defense.py              # Defense stack: cache, dedupe, rate limit, pool, protocols
+├── proxy_defense.py              # Defense stack: cache, dedupe, rate limit, pool, protocols, middleware, filter, LLM routing
 ├── proxy_harvester.py            # Upstream harvest, honeypot detector, session affinity
 ├── mcp_proxy_server.py           # MCP server (stdlib stdio JSON-RPC, 4 tools)
 ├── requirements.txt              # Core deps only (aiohttp, aiofiles, httpx)
@@ -714,21 +670,11 @@ owl-agent-proxy/
 ├── pytest.ini                    # Test config (async mode, testpaths)
 ├── pyproject.toml                # Build metadata + console scripts
 ├── LICENSE                       # MIT
-├── packaging/
-│   ├── PKGBUILD                  # Arch / omArchy package
-│   └── make-source.sh            # tarball from an exact commit
-├── .gitignore                    # Git ignore rules
-├── README.md                     # This file
-├── worklog.md                    # Session worklog template
-├── .github/
-│   ├── scripts/
-│   │   └── ci-check.sh           # Escalation + credential guard
-│   └── workflows/
-│       └── protocol-check.yml    # guard + pytest (3.10–3.12) + installer smoke
 ├── config/
 │   ├── AGENTS.md                 # Agent system prompt
 │   ├── opencode.json             # OpenCode plugin configuration
-│   └── proxy_pool.template.json  # Proxy pool template (copy to use)
+│   ├── proxy_pool.template.json  # Proxy pool template (copy to use)
+│   └── external_proxies.template.json  # External proxy URLs (BounceBack/https_proxy)
 ├── docs/
 │   ├── MCP_INTEGRATION.md        # Per-host MCP wiring + tool reference
 │   ├── V7_UPSTREAM.md            # Harvesting, honeypot, sticky sessions, runbook
@@ -737,6 +683,9 @@ owl-agent-proxy/
 │   └── LAYERED_FALLBACK.md           # Fallback architecture and resilience
 ├── examples/
 │   └── usage.py                  # Usage examples for all protocols
+├── packaging/
+│   ├── PKGBUILD                  # Arch / omArchy package
+│   └── make-source.sh            # tarball from an exact commit
 ├── scripts/
 │   ├── install-ubuntu.sh         # Ubuntu system install (apt + phases)
 │   ├── install-arch.sh           # Arch / omArchy system install (pacman + install-owl.sh)
@@ -753,11 +702,17 @@ owl-agent-proxy/
 │       ├── explain-analyzer.md   # SQL EXPLAIN skill
 │       ├── research.md           # Research skill
 │       └── simulator.md          # Interaction tracing skill
-└── tests/
-    ├── test_proxy_defense.py     # Core stack unit tests
-    ├── test_proxy_harvester.py   # Harvester / affinity / honeypot (offline)
-    ├── test_v71_integration.py   # Pool + client integration (offline)
-    └── test_mcp_server.py        # MCP protocol + stdio subprocess
+├── tests/
+│   ├── conftest.py               # Blocks outbound sockets (hermetic tests)
+│   ├── test_proxy_defense.py     # Core stack unit tests
+│   ├── test_proxy_harvester.py   # Harvester / affinity / honeypot (offline)
+│   ├── test_v71_integration.py   # Pool + client integration (offline)
+│   └── test_mcp_server.py        # MCP protocol + stdio subprocess
+└── .github/
+    ├── scripts/
+    │   └── ci-check.sh           # Escalation + credential guard
+    └── workflows/
+        └── protocol-check.yml    # guard + pytest (3.10–3.12) + installer smoke
 ```
 
 ---
@@ -799,12 +754,13 @@ protocol="stealth"  # last resort — see docs/STEALTH_BROWSER.md
 
 ## Skills System
 
-Skills are packaged in the [Agent Skills](https://skills.sh) layout, so the `skills` CLI can
-discover them and install them into any supported agent host.
+Skills are packaged in the [Agent Skills](https://skills.sh) layout, so the `skills`
+CLI can discover them and install them into any supported agent host.
 
-A valid skill is `skills/<name>/SKILL.md` with YAML frontmatter declaring at least `name`
-(lowercase kebab-case, matching the directory) and `description`. The CLI **silently ignores**
-flat markdown files with no frontmatter — which is why the legacy files below are listed apart.
+A valid skill is `skills/<name>/SKILL.md` with YAML frontmatter declaring at least
+`name` (lowercase kebab-case, matching the directory) and `description`. The CLI
+**silently ignores** flat markdown files with no frontmatter — which is why the
+legacy files below are listed apart.
 
 | Skill | Purpose |
 |-------|---------|
@@ -817,13 +773,14 @@ skills add . --skill '*' -l                                     # list local ski
 python .github/scripts/check-skills.py                          # validate packaging (what CI runs)
 ```
 
-The `skills` CI job fails the build on a malformed or undiscoverable skill, so packaging cannot
-regress as skills are added.
+The `skills` CI job fails the build on a malformed or undiscoverable skill, so
+packaging cannot regress as skills are added.
 
 ### Legacy prompt files (not discoverable — migration pending)
 
-These carry useful prompt content but have no frontmatter, so `skills add` finds **0** skills in
-this directory today. They are slated for migration to `skills/<name>/SKILL.md`.
+These carry useful prompt content but have no frontmatter, so `skills add` finds
+**0** skills in this directory today. They are slated for migration to
+`skills/<name>/SKILL.md`.
 
 | Skill | Purpose | Trigger |
 |-------|---------|---------|
@@ -846,6 +803,10 @@ Stated plainly, because these matter more than the feature list:
   residential network. Throughput and lifetime are unpredictable; the scoring
   adapts, but there is no SLA. For stable geo-targeted residential IPs, plug a
   paid provider in as a `ProxySource`.
+- **External proxy binaries not bundled.** BounceBack and https_proxy binaries
+  must be downloaded from GitHub releases (SSL may block access in some
+  environments). No Go/Rust/Deno toolchain is installed by default, so they
+  cannot be built from source in restricted environments.
 - **Sticky IP, static fingerprint.** `SessionAffinityManager` keeps the exit IP
   coherent per `(agent_id, domain)`, but the TLS/HTTP impersonation profile is
   fixed per client instance. Per-session fingerprint rotation is not implemented.
