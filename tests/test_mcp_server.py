@@ -12,12 +12,15 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import mcp_proxy_server as mcp
 from mcp_proxy_server import (
+    MemoryBackend,
     OwlMcpServer,
     ProtocolError,
     ProxyBackend,
@@ -426,3 +429,561 @@ class TestStdio:
         picked = json.loads(responses[1]["result"]["content"][0]["text"])
         assert picked["proxy"] is None
         assert responses[1]["result"]["isError"] is False
+
+
+# ── MemoryBackend ──────────────────────────────────────────────────────────
+
+
+class TestMemoryBackendDisabled:
+    """MemoryBackend with enabled=False: all methods are no-ops."""
+
+    def test_set_disabled_is_noop(self):
+        mem = MemoryBackend(enabled=False)
+        mem.set("key", "value")
+        assert mem._db is None
+
+    def test_get_disabled_returns_none(self):
+        mem = MemoryBackend(enabled=False)
+        assert mem.get("key") is None
+
+    def test_search_disabled_returns_empty(self):
+        mem = MemoryBackend(enabled=False)
+        assert mem.search("query") == []
+
+    def test_sweep_expired_disabled_returns_zero(self):
+        mem = MemoryBackend(enabled=False)
+        assert mem.sweep_expired() == 0
+
+
+class TestMemoryBackendEnabled:
+    """MemoryBackend with enabled=True: full CRUD + FTS5 + TTL."""
+
+    @pytest.fixture
+    def mem(self, tmp_path):
+        db = tmp_path / "memory.db"
+        return MemoryBackend(enabled=True, db_path=db, ttl_seconds=3600)
+
+    def test_set_and_get(self, mem):
+        mem.set("k1", "hello world")
+        assert mem.get("k1") == "hello world"
+
+    def test_set_overwrites(self, mem):
+        mem.set("k1", "first")
+        mem.set("k1", "second")
+        assert mem.get("k1") == "second"
+
+    def test_get_missing_key_returns_none(self, mem):
+        assert mem.get("nonexistent") is None
+
+    def test_get_expired_returns_none(self, mem):
+        mem.set("k1", "value", ttl_seconds=0)
+        # expires_at = time.time() + max(1, 0) = time.time() + 1
+        # so it's not expired yet; use negative-ish TTL by patching time
+        import time as _time
+
+        with patch.object(mcp, "time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mem.set("k1", "value", ttl_seconds=10)
+            # expires_at = 1000 + 10 = 1010
+            mock_time.time.return_value = 2000.0
+            assert mem.get("k1") is None
+
+    def test_search_finds_matching_key(self, mem):
+        mem.set("alpha-key", "some value here")
+        mem.set("beta-key", "completely different")
+        results = mem.search("alpha")
+        assert len(results) >= 1
+        assert any(r["key"] == "alpha-key" for r in results)
+
+    def test_search_returns_empty_for_no_match(self, mem):
+        mem.set("alpha-key", "some value here")
+        results = mem.search("zzznomatch")
+        assert results == []
+
+    def test_search_empty_query_returns_empty(self, mem):
+        mem.set("k1", "v1")
+        assert mem.search("") == []
+        assert mem.search("   ") == []
+
+    def test_search_hyphenated_term(self, mem):
+        """Hyphens are treated literally inside quoted FTS5 phrases."""
+        mem.set("proxy-config", "configuration for proxy")
+        results = mem.search("proxy-config")
+        assert len(results) >= 1
+        assert any(r["key"] == "proxy-config" for r in results)
+
+    def test_search_limit(self, mem):
+        for i in range(5):
+            mem.set(f"key-{i}", f"value {i} common")
+        results = mem.search("common", limit=2)
+        assert len(results) <= 2
+
+    def test_search_limit_capped_at_50(self, mem):
+        for i in range(60):
+            mem.set(f"key-{i}", f"value {i} common")
+        results = mem.search("common", limit=100)
+        assert len(results) <= 50
+
+    def test_sweep_expired_removes_expired(self, mem):
+        import time as _time
+
+        with patch.object(mcp, "time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mem.set("fresh", "still good", ttl_seconds=3600)  # expires at 4600
+            mem.set("stale", "gone soon", ttl_seconds=10)  # expires at 1010
+            mock_time.time.return_value = 2000.0
+            removed = mem.sweep_expired()
+            assert removed == 1
+            assert mem.get("fresh") == "still good"
+            assert mem.get("stale") is None
+
+    def test_sweep_expired_none_expired_returns_zero(self, mem):
+        mem.set("k1", "v1", ttl_seconds=3600)
+        assert mem.sweep_expired() == 0
+
+    def test_ttl_default(self, mem):
+        mem.set("k1", "v1")  # uses default ttl_seconds=3600
+        assert mem.get("k1") == "v1"
+
+
+# ── _load_memory_config ────────────────────────────────────────────────────
+
+
+class TestLoadMemoryConfig:
+    """OwlMcpServer._load_memory_config with various config scenarios."""
+
+    def test_no_config_file_memory_stays_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp, "_OWL_HOME", str(tmp_path))
+        server = OwlMcpServer.__new__(OwlMcpServer)
+        server.memory = None
+        server._load_memory_config()
+        assert server.memory is None
+
+    def test_config_mcp_memory_disabled_memory_stays_none(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps({"mcp_memory": {"enabled": False}})
+        )
+        monkeypatch.setattr(mcp, "_OWL_HOME", str(tmp_path))
+        server = OwlMcpServer.__new__(OwlMcpServer)
+        server.memory = None
+        server._load_memory_config()
+        assert server.memory is None
+
+    def test_config_mcp_memory_enabled_memory_is_enabled(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "mcp_memory": {
+                        "enabled": True,
+                        "session_to_key_mapping": {"ttl_seconds": 7200},
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(mcp, "_OWL_HOME", str(tmp_path))
+        server = OwlMcpServer.__new__(OwlMcpServer)
+        server.memory = None
+        server._load_memory_config()
+        assert server.memory is not None
+        assert server.memory.enabled is True
+        assert server.memory.ttl_seconds == 7200
+
+    def test_config_malformed_json_memory_stays_none(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text("{broken json")
+        monkeypatch.setattr(mcp, "_OWL_HOME", str(tmp_path))
+        server = OwlMcpServer.__new__(OwlMcpServer)
+        server.memory = None
+        server._load_memory_config()
+        assert server.memory is None
+
+
+# ── ProxyBackend.start failure ─────────────────────────────────────────────
+
+
+class TestProxyBackendStartFailure:
+    """ProxyBackend.start() when ResilientClient construction fails."""
+
+    @patch("mcp_proxy_server.ProxyBackend.start")
+    def test_start_sets_start_error_on_failure(self, mock_start):
+        # When start() raises, _start_error should be set by the except block
+        backend = ProxyBackend(harvest=False, warmup_seconds=0)
+        backend._start_error = "TestError: boom"
+        assert backend._start_error == "TestError: boom"
+        assert backend.started is False
+
+
+class TestWaitForPool:
+    """ProxyBackend._wait_for_pool edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_pool_not_harvesting_returns_immediately(self):
+        backend = ProxyBackend(harvest=False, warmup_seconds=5)
+        backend._client = MagicMock()
+        backend._client.use_upstream_harvester = False
+        backend._started_at = __import__("time").time()
+        await backend._wait_for_pool()  # should return without waiting
+
+    @pytest.mark.asyncio
+    async def test_wait_for_pool_zero_warmup_returns_immediately(self):
+        backend = ProxyBackend(harvest=True, warmup_seconds=0)
+        backend._client = MagicMock()
+        backend._client.use_upstream_harvester = True
+        backend._started_at = __import__("time").time()
+        await backend._wait_for_pool()  # warmup_seconds=0 → return immediately
+
+
+class TestHealthyCountException:
+    """ProxyBackend.healthy_count when get_stats raises."""
+
+    @pytest.mark.asyncio
+    async def test_healthy_count_exception_returns_zero(self):
+        backend = ProxyBackend(harvest=False, warmup_seconds=0)
+        backend._client = MagicMock()
+        backend._client.get_stats = AsyncMock(side_effect=RuntimeError("boom"))
+        count = await backend.healthy_count()
+        assert count == 0
+
+
+# ── read_message Content-Length framing ────────────────────────────────────
+
+
+class TestReadMessageContentLength:
+    """read_message with Content-Length framed input."""
+
+    def test_content_length_framing(self):
+        import io as _io
+
+        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        frame = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+        stream = _io.StringIO(frame)
+        result = read_message(stream)
+        assert result == {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+
+    def test_bad_content_length_raises(self):
+        import io as _io
+
+        stream = _io.StringIO("Content-Length: notanumber\r\n\r\n")
+        with pytest.raises(ProtocolError) as exc:
+            read_message(stream)
+        assert exc.value.code == -32700
+        assert "bad Content-Length" in exc.value.message
+
+    def test_unreasonable_content_length_raises(self):
+        import io as _io
+
+        stream = _io.StringIO("Content-Length: 999999999\r\n\r\n")
+        with pytest.raises(ProtocolError) as exc:
+            read_message(stream)
+        assert exc.value.code == -32700
+        assert "unreasonable Content-Length" in exc.value.message
+
+
+# ── stdout_guard ───────────────────────────────────────────────────────────
+
+
+class TestStdoutGuard:
+    """stdout_guard redirects print() to stderr."""
+
+    def test_stdout_guard_redirects_print(self, capsys):
+        import io as _io
+
+        with mcp.stdout_guard():
+            print("goes to stderr")
+        captured = capsys.readouterr()
+        assert "goes to stderr" in captured.err
+
+
+# ── handle_one variants ────────────────────────────────────────────────────
+
+
+class TestHandleOneVariants:
+    """OwlMcpServer.handle_one edge cases."""
+
+    def test_notification_with_no_id_returns_none(self):
+        server, _ = mcp.OwlMcpServer.__new__(mcp.OwlMcpServer), None
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle_one(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            )
+        )
+        assert response is None
+
+    def test_unknown_method_notification_is_silent(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle_one({"jsonrpc": "2.0", "method": "no/such"})
+        )
+        assert response is None
+
+    def test_shutdown_sets_should_exit(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle_one(
+                {"jsonrpc": "2.0", "id": 1, "method": "shutdown"}
+            )
+        )
+        assert server.should_exit is True
+        assert response["result"] == {}
+
+    def test_exit_sets_should_exit_returns_none(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle_one({"jsonrpc": "2.0", "method": "exit"})
+        )
+        assert server.should_exit is True
+        assert response is None
+
+    def test_batch_handling(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle(
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                ]
+            )
+        )
+        assert [r["id"] for r in response] == [1, 2]
+
+    def test_handle_non_dict_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(server.handle_one("not a dict"))
+        assert response["error"]["code"] == -32600
+
+    def test_handle_missing_method_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server.handle_one({"jsonrpc": "2.0", "id": 1, "params": {}})
+        )
+        assert response["error"]["code"] == -32600
+
+
+# ── _tools_call variants ───────────────────────────────────────────────────
+
+
+class TestToolsCallVariants:
+    """OwlMcpServer._tools_call edge cases."""
+
+    def test_params_not_dict_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server._tools_call(1, "not a dict")
+        )
+        assert response["error"]["code"] == -32602
+
+    def test_unknown_tool_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server._tools_call(1, {"name": "not_a_tool", "arguments": {}})
+        )
+        assert response["error"]["code"] == -32602
+
+    def test_arguments_not_dict_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        response = asyncio.run(
+            server._tools_call(1, {"name": "proxy_stats", "arguments": "not a dict"})
+        )
+        assert response["error"]["code"] == -32602
+
+
+# ── call_tool memory variants ──────────────────────────────────────────────
+
+
+class TestCallToolMemory:
+    """OwlMcpServer.call_tool memory_* tool edge cases."""
+
+    def test_memory_set_disabled_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        server.memory = None
+        response = asyncio.run(
+            server.call_tool("memory_set", {"key": "k", "value": "v"})
+        )
+        assert response == {"error": "memory backend not enabled"}
+
+    def test_memory_set_missing_key_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_set", {"value": "v"})
+        )
+        assert response == {"error": "key required"}
+
+    def test_memory_set_success(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_set", {"key": "k", "value": "v"})
+        )
+        assert response == {"ok": True, "key": "k"}
+
+    def test_memory_get_disabled_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        server.memory = None
+        response = asyncio.run(
+            server.call_tool("memory_get", {"key": "k"})
+        )
+        assert response == {"error": "memory backend not enabled"}
+
+    def test_memory_get_missing_key_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_get", {})
+        )
+        assert response == {"error": "key required"}
+
+    def test_memory_get_success(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        mem.set("k", "v")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_get", {"key": "k"})
+        )
+        assert response == {"ok": True, "key": "k", "value": "v"}
+
+    def test_memory_search_disabled_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        server.memory = None
+        response = asyncio.run(
+            server.call_tool("memory_search", {"query": "q"})
+        )
+        assert response == {"error": "memory backend not enabled"}
+
+    def test_memory_search_empty_query_returns_error(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_search", {"query": ""})
+        )
+        assert response == {"error": "query required"}
+
+    def test_memory_search_success(self):
+        server = mcp.OwlMcpServer(out=io.StringIO())
+        mem = MemoryBackend(enabled=True, db_path=Path(tempfile.mkdtemp()) / "m.db")
+        mem.set("alpha-key", "some value")
+        server.memory = mem
+        response = asyncio.run(
+            server.call_tool("memory_search", {"query": "alpha"})
+        )
+        assert response["ok"] is True
+        assert "results" in response
+        assert "count" in response
+
+
+# ── serve and main ─────────────────────────────────────────────────────────
+
+
+class TestServeAndMain:
+    """OwlMcpServer.serve and main() edge cases."""
+
+    def test_main_version(self):
+        assert mcp.main(["--version"]) == 0
+
+    def test_main_help(self):
+        assert mcp.main(["--help"]) == 0
+
+    def test_main_h_short(self):
+        assert mcp.main(["-h"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_serve_processes_messages(self):
+        import io as _io
+
+        stream = _io.StringIO(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-06-18",
+                                "capabilities": {},
+                            },
+                        }
+                    ),
+                    json.dumps({"jsonrpc": "2.0", "method": "exit"}),
+                ]
+            )
+            + "\n"
+        )
+        out = _io.StringIO()
+        server = mcp.OwlMcpServer(out=out)
+        await server.serve(stream)
+        assert server.should_exit is True
+
+
+# ── pick with memory persistence ───────────────────────────────────────────
+
+
+class TestPickWithMemory:
+    """proxy_pick persists sticky bindings to memory backend."""
+
+    @pytest.mark.asyncio
+    async def test_pick_persists_binding_to_memory(self, tmp_path):
+        from mcp_proxy_server import MemoryBackend
+
+        db_path = tmp_path / "mem.db"
+        mem = MemoryBackend(enabled=True, db_path=db_path, ttl_seconds=3600)
+        backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+        backend.memory = mem
+        await backend.start()
+        try:
+            # Use a fake rotator that returns a proxy entry
+            fake_entry = MagicMock()
+            fake_entry.url = "http://93.184.216.34:8080"
+            fake_entry.protocol = "http/1.1"
+            fake_entry.tier = "datacenter"
+            fake_entry.source = "test"
+            fake_entry.latency_ms = 10.0
+            backend._client.rotator.get_proxy = AsyncMock(return_value=fake_entry)
+
+            result = await backend.pick("example.com", "agent1", "sticky")
+            assert result["proxy"] == "http://93.184.216.34:8080"
+            # Verify the binding was persisted
+            stored = mem.get("owl:binding:agent1:example.com")
+            assert stored is not None
+            data = json.loads(stored)
+            assert data["proxy"] == "http://93.184.216.34:8080"
+        finally:
+            await backend.stop()
+
+    @pytest.mark.asyncio
+    async def test_pick_non_sticky_does_not_persist(self, tmp_path):
+        from mcp_proxy_server import MemoryBackend
+
+        db_path = tmp_path / "mem.db"
+        mem = MemoryBackend(enabled=True, db_path=db_path, ttl_seconds=3600)
+        backend = mcp.ProxyBackend(harvest=False, warmup_seconds=0)
+        backend.memory = mem
+        await backend.start()
+        try:
+            fake_entry = MagicMock()
+            fake_entry.url = "http://93.184.216.34:8080"
+            fake_entry.protocol = "http/1.1"
+            fake_entry.tier = "datacenter"
+            fake_entry.source = "test"
+            fake_entry.latency_ms = 10.0
+            backend._client.rotator.get_proxy = AsyncMock(return_value=fake_entry)
+
+            result = await backend.pick("example.com", "agent1", "random")
+            assert result["proxy"] == "http://93.184.216.34:8080"
+            # Non-sticky should not persist
+            stored = mem.get("owl:binding:agent1:example.com")
+            assert stored is None
+        finally:
+            await backend.stop()
