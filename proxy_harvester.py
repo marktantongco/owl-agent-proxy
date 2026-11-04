@@ -38,6 +38,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger("owl-agent.harvester")
@@ -45,6 +46,11 @@ logger = logging.getLogger("owl-agent.harvester")
 DEFAULT_TIMEOUT = 15.0
 USER_AGENT = "owl-agent-harvester/7.1"
 VALID_PROTOCOLS = ("http", "https", "socks4", "socks5")
+
+# On-disk persistence for harvester state (_seen, _last, health tracker).
+# Single-file vendoring: proxy_defense._load_harvester() looks for
+# proxy_harvester.py in ~/.owl-agent/, and state lives alongside it.
+STATE_FILE = Path.home() / ".owl-agent" / "harvester_state.json"
 
 # ── field alias tables ──────────────────────────────────────────────────────
 _IP_KEYS = ("ip", "host", "address", "proxy_ip", "ip_address", "ipAddress")
@@ -472,9 +478,11 @@ class UpstreamHarvester:
                 headers={"User-Agent": USER_AGENT},
             )
             self._owns_client = True
+        self.load_state()
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
+        self.save_state()
         if self._owns_client and self._client is not None:
             closer = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
             if closer:
@@ -545,6 +553,54 @@ class UpstreamHarvester:
     def last_snapshot(self) -> Dict[str, int]:
         """Per-source count from the most recent successful fetch."""
         return {name: len(items) for name, items in self._last.items()}
+
+    # ── on-disk persistence ──────────────────────────────────────────
+    def save_state(self) -> None:
+        """Persist harvester state (_seen, _last, health tracker) to disk.
+
+        Written atomically via temp file + replace so a crash mid-write never
+        leaves a truncated state file.
+        """
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            state = {
+                "seen": sorted(self._seen),
+                "last": {name: [p.get("url", "") for p in items]
+                         for name, items in self._last.items()},
+                "health": self.health.snapshot(),
+            }
+            tmp = str(STATE_FILE) + ".tmp"
+            with open(tmp, "w") as handle:
+                json.dump(state, handle)
+            Path(tmp).replace(STATE_FILE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("harvester state save failed: %s", exc)
+
+    def load_state(self) -> None:
+        """Load harvester state from disk if present.
+
+        Restores _seen (dedupe memory), _last (per-source snapshot), and the
+        health tracker's decayed stats so a restarted process does not
+        re-fetch already-seen proxies or lose source yield learning.
+        """
+        if not STATE_FILE.exists():
+            return
+        try:
+            with open(STATE_FILE) as handle:
+                state = json.load(handle)
+            self._seen = set(state.get("seen", []))
+            for name, urls in state.get("last", {}).items():
+                self._last[name] = [{"url": u} for u in urls if u]
+            health_state = state.get("health", {})
+            for name, stats in health_state.items():
+                entry = self.health._stats[name]
+                entry.fetched = float(stats.get("fetched", 0.0))
+                entry.valid = float(stats.get("valid", 0.0))
+                entry.failures = int(stats.get("failures", 0))
+                entry.last_fetch = float(stats.get("last_fetch", time.time()))
+                entry.last_error = stats.get("last_error")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("harvester state load failed: %s", exc)
 
 
 # ── honeypot / injection detector ─────────────────────────────────────────
