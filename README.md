@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
-[![Tests](https://img.shields.io/badge/tests-407%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-484%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -82,6 +82,8 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | **Smart Caching** | SHA-256 keyed, TTL-based, protocol-aware, in-memory |
 | **Deduplication** | In-flight request coalescing — no duplicate network calls |
 | **Rate Limiting** | Per-domain token bucket algorithm |
+| **Token-Bucket Persistence** | Rate-limit state (`tokens`, `last_update`) serialized to `token_buckets.json`, survives process restart |
+| **Config Schema Validation** | 21-key `CONFIG_SCHEMA` with type/min constraints; invalid values logged as warnings (not fatal), unknown keys forward-compatible |
 | **Proxy Rotation** | Tier-based pool with health tracking, auto-ban, latency sorting |
 | **External Proxies** | BounceBack (Go stealth redirector, port 8080) and https_proxy (Rust stealth HTTPS forward proxy, port 3128) via `external_proxies` config |
 | **WAF Filter Pipeline** | BounceBack-inspired rules (ip/geo/regexp/time/and/or/not) evaluated before proxy selection |
@@ -112,9 +114,12 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 407 passing, 0 failed |
-| Coverage | ~50% | 82% (proxy_defense 81%, mcp_proxy_server 87%, proxy_harvester 81%) |
+| Tests | 9 | 484 passing, 0 failed |
+| Coverage | ~50% | 83% (proxy_defense 82%, mcp_proxy_server 86%, proxy_harvester 81%) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
+| Rate-limit persistence | in-memory only | `token_buckets.json` — state survives restart via `TokenBucket.to_dict()`/`from_dict()`, debounced save every 10 acquires, final persist on `close()` |
+| Config validation | `dict.get()` with defaults | `CONFIG_SCHEMA` (21 keys) + `validate_config()` — invalid values logged as warnings, unknown keys forward-compatible |
+| Verification suite | V1–V20 checks | `run.sh` CLI wrapper (stats/fetch/harvest/mcp-selftest/verify), `config/config.json` defaults, tool-name prefixes accept `web_`/`github_`/`arxiv_` |
 
 Deep dive: [docs/V7_UPSTREAM.md](docs/V7_UPSTREAM.md).
 
@@ -351,6 +356,7 @@ built-in defaults):
 | `validator_concurrency` | `10` | parallel validation probes |
 | `validator_timeout` | `8` | seconds per probe |
 | `persist_proxy_cache` | `true` | write the pool to `config/proxy_cache.json` |
+| `token_bucket_persist_file` | `~/.owl-agent/config/token_buckets.json` | file for persisting token-bucket rate-limit state across restarts |
 
 Turn harvesting off without uninstalling:
 
@@ -376,6 +382,7 @@ Turn harvesting off without uninstalling:
 | `external_proxies` | `List[str]` | None | external proxy URLs (BounceBack/https_proxy) at tier 1 |
 | `filter_pipeline` | `FilterPipeline` | None | WAF filter rules evaluated before proxy selection |
 | `middleware` | `List[Middleware]` | None | composable middleware wrappers |
+| `token_bucket_persist_file` | `str` | `~/.owl-agent/config/token_buckets.json` | path to persist token-bucket rate-limit state |
 
 Precedence: explicit argument → `config.json` → built-in default.
 
@@ -605,7 +612,7 @@ Run the same checks by hand:
 
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
-python -m pytest -q                                 # 407 tests
+python -m pytest -q                                 # 484 tests
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -648,11 +655,11 @@ covered by the installer's V19/V20 checks, which SKIP without network.
 
 | Metric | Value |
 |--------|-------|
-| Tests passed | 407 |
+| Tests passed | 484 |
 | Tests failed | 0 |
-| Coverage | 82% |
-| proxy_defense.py | 81% |
-| mcp_proxy_server.py | 87% |
+| Coverage | 83% |
+| proxy_defense.py | 82% |
+| mcp_proxy_server.py | 86% |
 | proxy_harvester.py | 81% |
 
 ---
@@ -669,10 +676,12 @@ owl-agent-proxy/
 ├── requirements-dev.txt          # pytest + pytest-asyncio
 ├── pytest.ini                    # Test config (async mode, testpaths)
 ├── pyproject.toml                # Build metadata + console scripts
+├── run.sh                        # CLI wrapper: stats, fetch, harvest, mcp-selftest, verify
 ├── LICENSE                       # MIT
 ├── config/
 │   ├── AGENTS.md                 # Agent system prompt
 │   ├── opencode.json             # OpenCode plugin configuration
+│   ├── config.json               # Runtime config defaults (all keys optional)
 │   ├── proxy_pool.template.json  # Proxy pool template (copy to use)
 │   └── external_proxies.template.json  # External proxy URLs (BounceBack/https_proxy)
 ├── docs/
