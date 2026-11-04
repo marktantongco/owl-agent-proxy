@@ -8,9 +8,11 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `run.sh` has no `serve` subcommand and cannot replace an `:8080` listener. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 484 offline tests.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 507 offline tests.
 
-**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (484 passing), not the prose.
+`reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy on a configurable port, forwarding to upstream targets with protocol escalation (http/1.1 → http/2 → ja3 → websocket → browser → stealth), circuit breaker, and health-aware load balancing.
+
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
 
 ---
 
@@ -18,7 +20,7 @@
 
 | Pipeline Stage | Deployment Stage | Skills |
 |----------------|------------------|--------|
-| **DEFINE** | Stage 1 – Discover & Research | `find-skills`, `agent-browser`, `grill-me`, `grilling`, `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `github-research`, `codemap`, `agent-skills` *(meta-skill: NOT FOUND — gap documented)* |
+| **DEFINE** | Stage 1 – Discover & Research | `find-skills`, `agent-browser`, `grill-me`, `grilling`, `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `github-research`, `codemap`, `agent-skills`, `meta-skill` |
 | **PLAN** | Stage 2 – Plan & Architect | `domain-modeling`, `to-spec`, `grill-with-docs`, `grill-with-tail`, `grill-powers`, `ponytail`, `brainstorming`, `ralph-prompt-multi-task`, `orchestrate`, `chain-of-thought`, `headroom`, `Caveman` |
 | **BUILD** | Stage 3 – Execute | `writing-plans`, `executing-plans`, `subagent-driven-development`, `systematic-debugging`, `parallel-agent-skills` |
 | **VERIFY** | Stage 3 – Verify | `verification-before-completion`, `systematic-debugging` |
@@ -33,14 +35,18 @@
 |---|-----------------|----------------|------------------|
 | 1 | `agent-skills` | DEFINE | Discover, install, and manage skills across skills.sh ecosystem before planning |
 | 2 | `codemap` | DEFINE | Map codebase structure — modules, dependencies, entry points, boundaries — for impact analysis |
-| 3 | `ralph-prompt-multi-task` | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
-| 4 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP |
-| 5 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
-| 6 | `headroom` | PLAN | Assess capacity, constraints, and resource availability before committing to build |
-| 7 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
-| 8 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
-| 9 | `devils-advocate` | REVIEW | Systematically challenge assumptions, identify failure modes, stress-test before commit |
-| 10 | `impeccable` | REVIEW | Full-spectrum quality framework: audit, critique, distill, adapt, optimize, delight, result |
+| 3 | `meta-skill` | DEFINE | Discover and install skills from skills.sh ecosystem when capability is missing |
+| 4 | `agent-reach` | DEFINE | Read and search across web platforms (Twitter, Reddit, YouTube, GitHub, etc.) |
+| 5 | `duckduckgo-search` | DEFINE | Free web search via DuckDuckGo — no API key required |
+| 6 | `exa-web-search-free` | DEFINE | Free AI-powered neural search via Exa MCP — no API key required |
+| 7 | `ralph-prompt-multi-task` | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
+| 8 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP |
+| 9 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
+| 10 | `headroom` | PLAN | Assess capacity, constraints, and resource availability before committing to build |
+| 11 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
+| 12 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
+| 13 | `devils-advocate` | REVIEW | Systematically challenge assumptions, identify failure modes, stress-test before commit |
+| 14 | `impeccable` | REVIEW | Full-spectrum quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ---
 
@@ -74,6 +80,10 @@
 | `you-web` | youdotcom-oss/agent-skills | DEFINE |
 | `agent-skills` | Custom stub (`skills/agent-skills/`) | DEFINE |
 | `codemap` | Custom stub (`skills/codemap/`) | DEFINE |
+| `meta-skill` | Custom stub (`skills/meta-skill/`) | DEFINE |
+| `agent-reach` | Custom stub (`skills/agent-reach/`) | DEFINE |
+| `duckduckgo-search` | Custom stub (`skills/duckduckgo-search/`) | DEFINE |
+| `exa-web-search-free` | Custom stub (`skills/exa-web-search-free/`) | DEFINE |
 | `ralph-prompt-multi-task` | Custom stub (`skills/ralph-prompt-multi-task/`) | PLAN |
 | `orchestrate` | Custom stub (`skills/orchestrate/`) | PLAN |
 | `chain-of-thought` | Custom stub (`skills/chain-of-thought/`) | PLAN |
@@ -97,12 +107,12 @@ npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --a
 
 | Skill | Status |
 |-------|--------|
-| `meta-skill` | Not found in vercel-labs/skills, mattpocock/skills, or parallel-web/parallel-agent-skills |
+| `meta-skill` | Custom stub created (`skills/meta-skill/`) — find-skills (vercel-labs/skills) serves as the meta-skill for discovery |
 | `code-review` | mattpocock/skills engineering — available but not yet installed |
 | `brainstorming` | obra/superpowers — available but not yet installed |
-| `agent-reach` | Not found in any major skill repository |
-| `duckduckgo-search` | Not found as a published skill |
-| `exa-web-search-free` | Not found as a published skill |
+| `agent-reach` | Custom stub created (`skills/agent-reach/`) — published at panniantong/agent-reach (16.1K installs) |
+| `duckduckgo-search` | Custom stub created (`skills/duckduckgo-search/`) — published at nousresearch/hermes-agent |
+| `exa-web-search-free` | Custom stub created (`skills/exa-web-search-free/`) — published at sundial-org/awesome-openclaw-skills (2.8K installs) |
 
 ---
 
@@ -134,7 +144,7 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 | **Brainstorming** | `brainstorming` (superpowers), `grilling`, `grill-me` | Clarify ideas through Q&A | obra/superpowers, mattpocock/skills |
 | **Planning** | `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs` | Break into tasks, write PRD, GLOSSARY.md + ADRs | hazikkhatri/superpowers, mattpocock/skills |
 
-**Still missing:** `meta-skill`, `agent-reach`, `duckduckgo-search`, `exa-web-search-free` — not found in any major skill repository.
+**All research skills now available** — custom stubs created for meta-skill, agent-reach, duckduckgo-search, exa-web-search-free. Published alternatives exist for agent-reach (panniantong/agent-reach, 16.1K installs), duckduckgo-search (nousresearch/hermes-agent), exa-web-search-free (sundial-org/awesome-openclaw-skills, 2.8K installs).
 
 ---
 

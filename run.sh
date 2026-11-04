@@ -113,6 +113,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         cmd += ["--port", str(args.port)]
     if args.target is not None:
         cmd += ["--target", args.target]
+    if args.targets is not None:
+        cmd += ["--targets", args.targets]
     result = subprocess.run(cmd)
     return result.returncode
 
@@ -151,6 +153,7 @@ def main() -> int:
     p_serve = sub.add_parser("serve", help="Run reverse proxy HTTP ingress")
     p_serve.add_argument("--port", type=int, default=None, help="Listen port")
     p_serve.add_argument("--target", default=None, help="Upstream target host")
+    p_serve.add_argument("--targets", default=None, help="Comma-separated upstream targets for load balancing")
     p_serve.set_defaults(func=cmd_serve)
 
     p_verify = sub.add_parser("verify", help="Run installation verification")

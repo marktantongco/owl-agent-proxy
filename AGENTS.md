@@ -5,17 +5,19 @@ This file configures agent skills for the OWL Agent Proxy project.
 ## Project
 
 - **Name**: owl-agent-proxy
-- **Description**: Client-side HTTP defense library + stdio MCP server + CLI. NOT a reverse proxy. Provides proxy pooling, caching, deduplication, domain rate limiting, tier-based proxy rotation, upstream harvesting, honeypot detection, sticky sessions, and MCP server for AI agents. `run.sh` has no `serve` subcommand — it cannot replace a :8080 listener.
-- **Entry point**: `proxy_defense.py` (client library) + `mcp_proxy_server.py` (stdio MCP server) + `run.sh` (CLI)
+- **Description**: Client-side HTTP defense library + stdio MCP server + CLI with optional reverse proxy ingress. Provides proxy pooling, caching, deduplication, domain rate limiting, tier-based proxy rotation, upstream harvesting, honeypot detection, sticky sessions, and MCP server for AI agents. Core is NOT a reverse proxy — `reverse_proxy.py` adds optional HTTP ingress on a configurable port, forwarding through ResilientClient egress to upstream targets.
+- **Entry point**: `proxy_defense.py` (client library) + `mcp_proxy_server.py` (stdio MCP server) + `run.sh` (CLI) + `reverse_proxy.py` (optional HTTP ingress)
 - **Test command**: `python -m pytest tests/ -q`
 - **Verify command**: `python scripts/verify-install.py --owl-home <path> --no-live`
-- **CLI**: `./run.sh stats | fetch | harvest | mcp-selftest | verify`
+- **CLI**: `./run.sh stats | fetch | harvest | mcp-selftest | serve | verify`
 
-**Important alignment notes:**
-- The upstream repo is **not a reverse proxy** — it's a client-side library + stdio MCP server + CLI.
-- It cannot replace an `:8080` listener; `run.sh` has no `serve` subcommand.
-- Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 484 offline tests.
-- Docs have version drift (About says v3.0, README says v7.1). Trust the tests (484 passing), not the prose.
+**Architecture alignment:**
+- Core: client-side library + stdio MCP server + CLI (NOT a reverse proxy by itself)
+- `reverse_proxy.py`: optional HTTP ingress layer that wraps ResilientClient egress as a reverse proxy
+- Protocol escalation: http/1.1 → http/2 → ja3 → websocket → browser → stealth
+- Circuit breaker: per-protocol failure tracking with cooldown
+- Load balancing: multiple upstream targets with health-aware round-robin
+- Trust the tests (484+ passing), not docs prose (version drift: About v3.0 vs README v7.1)
 
 ## Skills
 

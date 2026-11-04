@@ -8,9 +8,11 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `run.sh` has no `serve` subcommand and cannot replace an `:8080` listener. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 484 offline tests.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 507 offline tests.
 
-**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (484 passing), not the prose.
+`reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy on a configurable port, forwarding to upstream targets with protocol escalation (http/1.1 → http/2 → ja3 → websocket → browser → stealth), circuit breaker, and health-aware load balancing.
+
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
 
 **Operating Instructions:** smp5.4pd.md (Tactical Merge) — Mode: 🐜 Systematic
 
@@ -126,6 +128,10 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 | you-web | youdotcom-oss/agent-skills | DEFINE |
 | agent-skills | Custom stub (`skills/agent-skills/`) | DEFINE |
 | codemap | Custom stub (`skills/codemap/`) | DEFINE |
+| meta-skill | Custom stub (`skills/meta-skill/`) | DEFINE |
+| agent-reach | Custom stub (`skills/agent-reach/`) | DEFINE |
+| duckduckgo-search | Custom stub (`skills/duckduckgo-search/`) | DEFINE |
+| exa-web-search-free | Custom stub (`skills/exa-web-search-free/`) | DEFINE |
 | ralph-prompt-multi-task | Custom stub (`skills/ralph-prompt-multi-task/`) | PLAN |
 | orchestrate | Custom stub (`skills/orchestrate/`) | PLAN |
 | chain-of-thought | Custom stub (`skills/chain-of-thought/`) | PLAN |
@@ -141,12 +147,12 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 
 | Skill | Status |
 |-------|--------|
-| `meta-skill` | Not found in vercel-labs/skills, mattpocock/skills, or parallel-web/parallel-agent-skills |
+| `meta-skill` | Custom stub created (`skills/meta-skill/`) — find-skills (vercel-labs/skills) serves as the meta-skill for discovery |
 | `code-review` | mattpocock/skills engineering — available but not yet installed |
 | `brainstorming` | obra/superpowers — available but not yet installed |
-| `agent-reach` | Not found in any major skill repository |
-| `duckduckgo-search` | Not found as a published skill |
-| `exa-web-search-free` | Not found as a published skill |
+| `agent-reach` | Custom stub created (`skills/agent-reach/`) — published at panniantong/agent-reach (16.1K installs) |
+| `duckduckgo-search` | Custom stub created (`skills/duckduckgo-search/`) — published at nousresearch/hermes-agent |
+| `exa-web-search-free` | Custom stub created (`skills/exa-web-search-free/`) — published at sundial-org/awesome-openclaw-skills (2.8K installs) |
 
 ---
 
