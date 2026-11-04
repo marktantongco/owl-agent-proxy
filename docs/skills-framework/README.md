@@ -10,7 +10,7 @@
 
 The skills framework maps every job type (bug fix, feature, security, performance, docs, incident, refactor, dependency, architecture, full delivery) through a 6-stage pipeline: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**.
 
-16 skills are installed at `~/.agents/skills/`. A research investigation skill is available at `~/.agents/skills/research-investigation-pipeline/`.
+26 skills are installed at `~/.agents/skills/` (16 original + 10 research/conceptual).
 
 ---
 
@@ -91,27 +91,35 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 | verification-before-completion | hazikkhatri/superpowers | VERIFY |
 | finishing-a-development-branch | hazikkhatri/superpowers | REVIEW/SHIP |
 | agent-run | GRD-Chang/grill-engineering | SHIP |
+| parallel-deep-research | parallel-web/parallel-agent-skills | DEFINE |
+| parallel-findall | parallel-web/parallel-agent-skills | DEFINE |
+| github-research | lingzhi227/agent-research-skills | DEFINE |
+| free-search-aggregator | vulcanusalex/free-search-aggregator | DEFINE |
+| freeUnlimited-websearch | lngu/openclaw-skill-freeunlimited-websearch | DEFINE |
+| you-web | youdotcom-oss/agent-skills | DEFINE |
+| ralph-prompt-multi-task | Custom stub (local) | PLAN |
+| orchestrate | Custom stub (local) | PLAN |
+| chain-of-thought | Custom stub (local) | PLAN |
+| headroom | Custom stub (local) | PLAN |
+| Caveman | Custom stub (local) | PLAN |
+| devils-advocate | Custom stub (local) | PLAN |
+| codemap | Custom stub (local) | PLAN |
+| parallel-agent-skills | Custom stub (local) | PLAN |
+| agent-skills | Custom stub (local) | PLAN |
+| impeccable | Custom stub (local) | REVIEW |
 
 ---
 
-## Skill Gaps (not published / not installed)
+## Skill Gaps (still not published anywhere)
 
 | Skill | Status |
 |-------|--------|
-| meta-skill | Not found in vercel-labs/skills or mattpocock/skills |
-| parallel-findall | Not found in vercel-labs/skills or mattpocock/skills |
-| code-review | mattpocock/skills engineering — not yet installed |
-| brainstorming | obra/superpowers — not yet installed |
-| ralph-prompt-multi-task | Not published |
-| orchestrate | Not published |
-| chain-of-thought | Not published |
-| headroom | Not published |
-| Caveman | Not published |
-| devils-advocate | Not published |
-| codemap | Not published |
-| parallel-agent-skills | Not published |
-| agent-skills | Not published |
-| pbakaus/impeccable | Not published |
+| `meta-skill` | Not found in vercel-labs/skills, mattpocock/skills, or parallel-web/parallel-agent-skills |
+| `code-review` | mattpocock/skills engineering — available but not yet installed |
+| `brainstorming` | obra/superpowers — available but not yet installed |
+| `agent-reach` | Not found in any major skill repository |
+| `duckduckgo-search` | Not found as a published skill |
+| `exa-web-search-free` | Not found as a published skill |
 
 ---
 
@@ -119,10 +127,12 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 
 **Path:** `~/.agents/skills/research-investigation-pipeline/SKILL.md`
 
-**Stack:** `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `meta-skill` (custom), `parallel-findall` (custom), `brainstorming`, `grilling`, `grill-me`, `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs`
+**Stack:** `parallel-deep-research`, `parallel-findall`, `github-research`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `meta-skill` (missing), `brainstorming`, `grilling`, `grill-me`, `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs`
 
 **Install:**
 ```bash
+npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research --skill parallel-findall --agent '*' -y
+npx skills add lingzhi227/agent-research-skills --skill github-research --agent '*' -y
 npx skills add https://github.com/vulcanusalex/free-search-aggregator --skill free-search-aggregator --agent '*' -y
 npx skills add https://github.com/lngu/openclaw-skill-freeunlimited-websearch --skill freeUnlimited-websearch --agent '*' -y
 npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --agent '*' -y
@@ -135,6 +145,6 @@ npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --a
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
 - Framework overview: `docs/skills-framework/README.md` (this file)
 - Quick reference: `docs/skills-framework/QUICK_REFERENCE.md`
-- Skill installation: `~/.agents/skills/` (16 skills installed)
+- Skill installation: `~/.agents/skills/` (26 skills installed)
 - Delivery tool: `tools/grill-engineering/` + `agent-run` CLI
 - Project config: `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`

@@ -10,8 +10,8 @@
 
 | Pipeline Stage | Deployment Stage | Skills |
 |----------------|------------------|--------|
-| **DEFINE** | Stage 1 – Discover & Research | `find-skills`, `agent-browser`, `grill-me`, `grilling`, `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach` *(meta-skill + parallel-findall: NOT FOUND — gaps documented)* |
-| **PLAN** | Stage 2 – Plan & Architect | `domain-modeling`, `to-spec`, `grill-with-docs`, `grill-with-tail`, `grill-powers`, `ponytail`, `brainstorming` *(10 conceptual skills not published: documented as gaps)* |
+| **DEFINE** | Stage 1 – Discover & Research | `find-skills`, `agent-browser`, `grill-me`, `grilling`, `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `github-research` *(meta-skill: NOT FOUND — gap documented)* |
+| **PLAN** | Stage 2 – Plan & Architect | `domain-modeling`, `to-spec`, `grill-with-docs`, `grill-with-tail`, `grill-powers`, `ponytail`, `brainstorming`, `ralph-prompt-multi-task`, `orchestrate`, `chain-of-thought`, `headroom`, `Caveman`, `devils-advocate`, `codemap`, `parallel-agent-skills`, `agent-skills`, `impeccable` *(10 conceptual skills: custom stubs created locally)* |
 | **BUILD** | Stage 3 – Execute | `writing-plans`, `executing-plans`, `subagent-driven-development`, `systematic-debugging` |
 | **VERIFY** | Stage 3 – Verify | `verification-before-completion`, `systematic-debugging` |
 | **REVIEW** | Stage 3 – Review | `code-review`, `finishing-a-development-branch` |
@@ -41,33 +41,43 @@
 | `verification-before-completion` | hazikkhatri/superpowers |
 | `finishing-a-development-branch` | hazikkhatri/superpowers |
 | `agent-run` | GRD-Chang/grill-engineering (pip package) |
+| `parallel-deep-research` | parallel-web/parallel-agent-skills (skills.sh) |
+| `parallel-findall` | parallel-web/parallel-agent-skills (skills.sh) |
+| `github-research` | lingzhi227/agent-research-skills |
+| `free-search-aggregator` | vulcanusalex/free-search-aggregator |
+| `freeUnlimited-websearch` | lngu/openclaw-skill-freeunlimited-websearch |
+| `you-web` | youdotcom-oss/agent-skills |
+| `ralph-prompt-multi-task` | Custom stub (local) |
+| `orchestrate` | Custom stub (local) |
+| `chain-of-thought` | Custom stub (local) |
+| `headroom` | Custom stub (local) |
+| `Caveman` | Custom stub (local) |
+| `devils-advocate` | Custom stub (local) |
+| `codemap` | Custom stub (local) |
+| `parallel-agent-skills` | Custom stub (local) |
+| `agent-skills` | Custom stub (local) |
+| `impeccable` | Custom stub (local) |
 
-### 📦 To Install (research stack from Stack 5)
+### 📦 Install commands (research stack)
 
 ```bash
+npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research --skill parallel-findall --agent '*' -y
+npx skills add lingzhi227/agent-research-skills --skill github-research --agent '*' -y
 npx skills add https://github.com/vulcanusalex/free-search-aggregator --skill free-search-aggregator --agent '*' -y
 npx skills add https://github.com/lngu/openclaw-skill-freeunlimited-websearch --skill freeUnlimited-websearch --agent '*' -y
 npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --agent '*' -y
 ```
 
-### ❌ Not Published as Skills (gaps)
+### ❌ Still not published anywhere (gap)
 
 | Skill | Status |
 |-------|--------|
-| `meta-skill` | Not found in vercel-labs/skills or mattpocock/skills |
-| `parallel-findall` | Not found in vercel-labs/skills or mattpocock/skills |
-| `code-review` | mattpocock/skills engineering — not yet installed |
-| `brainstorming` | obra/superpowers — not yet installed |
-| `ralph-prompt-multi-task` | Not published |
-| `orchestrate` | Not published |
-| `chain-of-thought` | Not published |
-| `headroom` | Not published |
-| `Caveman` | Not published |
-| `devils-advocate` | Not published |
-| `codemap` | Not published |
-| `parallel-agent-skills` | Not published |
-| `agent-skills` | Not published |
-| `pbakaus/impeccable` | Not published |
+| `meta-skill` | Not found in vercel-labs/skills, mattpocock/skills, or parallel-web/parallel-agent-skills |
+| `code-review` | mattpocock/skills engineering — available but not yet installed |
+| `brainstorming` | obra/superpowers — available but not yet installed |
+| `agent-reach` | Not found in any major skill repository |
+| `duckduckgo-search` | Not found as a published skill |
+| `exa-web-search-free` | Not found as a published skill |
 
 ---
 
@@ -92,12 +102,14 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 
 ## Research Investigation Stack (prepended to DEFINE for research-heavy pipelines)
 
-| Phase | Skills | Role |
-|-------|--------|------|
-| **Research** | `parallel-deep-research`, `duckduckgo-search`, `exa-web-search-free`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web` | Multi-source web research, aggregated results |
-| **Investigation** | `agent-reach`, `meta-skill` (custom), `parallel-findall` (custom) | Agent reachability, skill discovery across repos |
-| **Brainstorming** | `brainstorming` (superpowers), `grilling`, `grill-me` | Clarify ideas through Q&A |
-| **Planning** | `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs` | Break into tasks, write PRD, GLOSSARY.md + ADRs |
+| Phase | Skills | Role | Source |
+|-------|--------|------|--------|
+| **Research** | `parallel-deep-research`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web` | Multi-source web research, aggregated results | parallel-web/parallel-agent-skills, vulcanusalex, lngu, youdotcom-oss |
+| **Investigation** | `parallel-findall`, `github-research` | Agent reachability, skill discovery across repos, GitHub repo analysis | parallel-web/parallel-agent-skills, lingzhi227 |
+| **Brainstorming** | `brainstorming` (superpowers), `grilling`, `grill-me` | Clarify ideas through Q&A | obra/superpowers, mattpocock/skills |
+| **Planning** | `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs` | Break into tasks, write PRD, GLOSSARY.md + ADRs | hazikkhatri/superpowers, mattpocock/skills |
+
+**Still missing:** `meta-skill`, `agent-reach`, `duckduckgo-search`, `exa-web-search-free` — not found in any major skill repository.
 
 ---
 
@@ -119,6 +131,6 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
 - Framework overview: `docs/skills-framework/README.md`
 - Quick reference: `docs/skills-framework/QUICK_REFERENCE.md`
-- Skill installation: `~/.agents/skills/` (16 skills installed)
+- Skill installation: `~/.agents/skills/` (26 skills installed: 16 original + 10 research/conceptual)
 - Delivery tool: `tools/grill-engineering/` + `agent-run` CLI
 - Project config: `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`

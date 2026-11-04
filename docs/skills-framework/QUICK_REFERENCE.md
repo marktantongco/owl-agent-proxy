@@ -27,11 +27,11 @@
 
 | Stage | Skills |
 |-------|--------|
-| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs |
-| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail |
+| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web |
+| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman, devils-advocate, codemap, parallel-agent-skills, agent-skills |
 | BUILD | writing-plans, executing-plans, subagent-driven-development, systematic-debugging |
 | VERIFY | verification-before-completion, systematic-debugging |
-| REVIEW | code-review, finishing-a-development-branch |
+| REVIEW | code-review, finishing-a-development-branch, impeccable |
 | SHIP | agent-run, finishing-a-development-branch |
 
 ---
@@ -39,6 +39,8 @@
 ## Research Stack (install before use)
 
 ```bash
+npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research --skill parallel-findall --agent '*' -y
+npx skills add lingzhi227/agent-research-skills --skill github-research --agent '*' -y
 npx skills add https://github.com/vulcanusalex/free-search-aggregator --skill free-search-aggregator --agent '*' -y
 npx skills add https://github.com/lngu/openclaw-skill-freeunlimited-websearch --skill freeUnlimited-websearch --agent '*' -y
 npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --agent '*' -y
