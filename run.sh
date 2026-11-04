@@ -21,26 +21,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def _build_stats() -> dict:
+async def _build_stats() -> dict:
     import proxy_defense as pd
 
     client = pd.ResilientClient(auto_load_proxies=False, cache_file=None)
     rotator = client.rotator
     total = len(rotator.proxies)
     healthy = sum(1 for p in rotator.proxies if p.healthy)
+    stats = await rotator.session_stats()
     return {
         "version": "7.1",
         "proxies_total": total,
         "proxies_healthy": healthy,
-        "session_affinity": len(getattr(rotator, "_sessions", {})),
-        "source_health": getattr(rotator, "source_health", lambda: {})(),
+        "session_affinity": stats.get("active", 0),
+        "source_health": rotator.source_health(),
         "upstream_harvester": bool(getattr(client, "use_upstream_harvester", False)),
         "protocols_available": ["http", "https"],
     }
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
-    stats = _build_stats()
+    stats = asyncio.run(_build_stats())
     if args.json:
         print(json.dumps(stats, indent=2))
     else:
@@ -56,7 +57,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         client = pd.ResilientClient(auto_load_proxies=False, cache_file=None)
         async with client:
             try:
-                text = await client.get(args.url)
+                text = await client.request("GET", args.url)
                 if args.json:
                     print(json.dumps({"status": 200, "body": text[:500], "protocol": "http"}, indent=2))
                 else:
@@ -77,7 +78,7 @@ def cmd_harvest(args: argparse.Namespace) -> int:
 
     async def run() -> None:
         client = pd.ResilientClient(auto_load_proxies=False, cache_file=None)
-        count = await client.harvest(max_per_source=50)
+        count = await client.rotator.harvest_once(max_per_source=50)
         print(f"harvested {count} proxies")
 
     asyncio.run(run())
