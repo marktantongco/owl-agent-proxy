@@ -10,7 +10,7 @@
 
 The skills framework maps every job type (bug fix, feature, security, performance, docs, incident, refactor, dependency, architecture, full delivery) through a 6-stage pipeline: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**.
 
-26 skills are installed at `~/.agents/skills/` (16 original + 10 research/conceptual).
+26 skills are installed at `~/.agents/skills/` (16 original + 10 research/conceptual). 10 conceptual skill SKILL.md stubs are in `skills/`.
 
 ---
 
@@ -19,15 +19,32 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 | # | Pipeline | Trigger | DEFINE | PLAN | BUILD | VERIFY | REVIEW | SHIP |
 |---|----------|---------|--------|------|-------|--------|--------|------|
 | 1 | Bug Fix | Something is broken | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 2 | Feature Development | You want something new | grill-me, grilling | domain-modeling, to-spec, grill-powers | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 3 | Security Fix | Something isn't safe | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 4 | Performance Optimization | It's too slow | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 5 | Documentation & Spec | People need to understand it | grill-with-docs | domain-modeling, to-spec, ponytail | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 6 | Incident Response | Something big broke | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 7 | Refactoring | It's messy | grill-me, grilling | to-spec | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 8 | Dependency Update | Tools are old | agent-browser, find-skills | — | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 9 | Architecture Review | You're changing the design | grill-me, grilling | domain-modeling, to-spec, grill-powers | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 10 | Full Product Delivery | You're making something from scratch | grill-powers | writing-plans | executing-plans, subagent-driven-development, systematic-debugging | verification-before-completion | finishing-a-development-branch | agent-run, finishing-a-development-branch |
+| 2 | Feature Development | You want something new | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 3 | Security Fix | Something isn't safe | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 4 | Performance Optimization | It's too slow | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 5 | Documentation & Spec | People need to understand it | agent-skills, codemap, grill-with-docs | domain-modeling, to-spec, ponytail, ralph-prompt-multi-task, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 6 | Incident Response | Something big broke | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 7 | Refactoring | It's messy | agent-skills, codemap, grill-me, grilling | to-spec, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 8 | Dependency Update | Tools are old | agent-skills, codemap, agent-browser, find-skills | headroom | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 9 | Architecture Review | You're changing the design | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 10 | Full Product Delivery | You're making something from scratch | agent-skills, codemap, grill-powers | ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, subagent-driven-development, parallel-agent-skills, systematic-debugging | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | agent-run, finishing-a-development-branch |
+
+---
+
+## Conceptual Skill Stage Alignment
+
+| # | Conceptual Skill | Pipeline Stage | Role |
+|---|-----------------|----------------|------|
+| 1 | `agent-skills` | DEFINE | Discover, install, manage skills from skills.sh ecosystem |
+| 2 | `codemap` | DEFINE | Map codebase structure — modules, dependencies, entry points, boundaries |
+| 3 | `ralph-prompt-multi-task` | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
+| 4 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
+| 5 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
+| 6 | `headroom` | PLAN | Assess capacity, constraints, resource availability before committing to build |
+| 7 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
+| 8 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
+| 9 | `devils-advocate` | REVIEW | Systematically challenge assumptions, identify failure modes, stress-test before commit |
+| 10 | `impeccable` | REVIEW | Full-spectrum quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ---
 
@@ -35,11 +52,11 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 
 | Phase | Input | Output | Handoff To |
 |-------|-------|--------|------------|
-| DEFINE | Problem statement, job type | Clarified scope, research results | PLAN |
-| PLAN | Clarified scope | PRD, task list, GLOSSARY.md, ADRs | BUILD |
-| BUILD | PRD, tasks | Implemented code, tests | VERIFY |
+| DEFINE | Problem statement, job type | Clarified scope, research results, codebase map, skills inventory | PLAN |
+| PLAN | Clarified scope | PRD, task list, GLOSSARY.md, ADRs, phased prompts, capacity assessment | BUILD |
+| BUILD | PRD, tasks | Implemented code, tests, parallel execution results | VERIFY |
 | VERIFY | Implemented code | Test results, evidence | REVIEW |
-| REVIEW | Code, tests | Review feedback, approval decision | SHIP |
+| REVIEW | Code, tests | Challenge log, quality report, approval decision | SHIP |
 | SHIP | Approved code | Merged branch, deployed release | Complete |
 
 ---
@@ -49,10 +66,10 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 | Gate | From → To | Condition |
 |------|-----------|-----------|
 | G1 | DEFINE → PLAN | Requirements clarified, scope agreed |
-| G2 | PLAN → BUILD | PRD approved, tasks broken down |
+| G2 | PLAN → BUILD | PRD approved, tasks broken down, headroom confirmed |
 | G3 | BUILD → VERIFY | Implementation complete, tests written |
 | G4 | VERIFY → REVIEW | All tests pass, evidence captured |
-| G5 | REVIEW → SHIP | Code reviewed, approved for merge |
+| G5 | REVIEW → SHIP | Code reviewed, devils-advocate challenged, impeccable quality gate passed |
 | G6 | SHIP → Complete | Branch merged or PR closed |
 
 ---
@@ -97,16 +114,16 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 | free-search-aggregator | vulcanusalex/free-search-aggregator | DEFINE |
 | freeUnlimited-websearch | lngu/openclaw-skill-freeunlimited-websearch | DEFINE |
 | you-web | youdotcom-oss/agent-skills | DEFINE |
-| ralph-prompt-multi-task | Custom stub (local) | PLAN |
-| orchestrate | Custom stub (local) | PLAN |
-| chain-of-thought | Custom stub (local) | PLAN |
-| headroom | Custom stub (local) | PLAN |
-| Caveman | Custom stub (local) | PLAN |
-| devils-advocate | Custom stub (local) | PLAN |
-| codemap | Custom stub (local) | PLAN |
-| parallel-agent-skills | Custom stub (local) | PLAN |
-| agent-skills | Custom stub (local) | PLAN |
-| impeccable | Custom stub (local) | REVIEW |
+| agent-skills | Custom stub (`skills/agent-skills/`) | DEFINE |
+| codemap | Custom stub (`skills/codemap/`) | DEFINE |
+| ralph-prompt-multi-task | Custom stub (`skills/ralph-prompt-multi-task/`) | PLAN |
+| orchestrate | Custom stub (`skills/orchestrate/`) | PLAN |
+| chain-of-thought | Custom stub (`skills/chain-of-thought/`) | PLAN |
+| headroom | Custom stub (`skills/headroom/`) | PLAN |
+| Caveman | Custom stub (`skills/Caveman/`) | PLAN |
+| parallel-agent-skills | Custom stub (`skills/parallel-agent-skills/`) | BUILD |
+| devils-advocate | Custom stub (`skills/devils-advocate/`) | REVIEW |
+| impeccable | Custom stub (`skills/impeccable/`) | REVIEW |
 
 ---
 
@@ -145,6 +162,7 @@ npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --a
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
 - Framework overview: `docs/skills-framework/README.md` (this file)
 - Quick reference: `docs/skills-framework/QUICK_REFERENCE.md`
+- Skill stubs: `skills/` (10 conceptual skill SKILL.md files)
 - Skill installation: `~/.agents/skills/` (26 skills installed)
 - Delivery tool: `tools/grill-engineering/` + `agent-run` CLI
 - Project config: `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`
