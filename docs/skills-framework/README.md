@@ -6,6 +6,16 @@
 
 ---
 
+## Project Alignment
+
+**OWL Agent Proxy is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `run.sh` has no `serve` subcommand and cannot replace an `:8080` listener. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 484 offline tests.
+
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (484 passing), not the prose.
+
+**Operating Instructions:** smp5.4pd.md (Tactical Merge) — Mode: 🐜 Systematic
+
+---
+
 ## Overview
 
 The skills framework maps every job type (bug fix, feature, security, performance, docs, incident, refactor, dependency, architecture, full delivery) through a 6-stage pipeline: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**.
@@ -35,16 +45,16 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 
 | # | Conceptual Skill | Pipeline Stage | Role |
 |---|-----------------|----------------|------|
-| 1 | `agent-skills` | DEFINE | Discover, install, manage skills from skills.sh ecosystem |
+| 1 | `agent-skills` | DEFINE | Discover/install/manage skills from skills.sh ecosystem |
 | 2 | `codemap` | DEFINE | Map codebase structure — modules, dependencies, entry points, boundaries |
 | 3 | `ralph-prompt-multi-task` | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
 | 4 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
 | 5 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
-| 6 | `headroom` | PLAN | Assess capacity, constraints, resource availability before committing to build |
+| 6 | `headroom` | PLAN | Assess capacity, constraints, resource availability before build |
 | 7 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
 | 8 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
-| 9 | `devils-advocate` | REVIEW | Systematically challenge assumptions, identify failure modes, stress-test before commit |
-| 10 | `impeccable` | REVIEW | Full-spectrum quality framework: audit, critique, distill, adapt, optimize, delight, result |
+| 9 | `devils-advocate` | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
+| 10 | `impeccable` | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ---
 

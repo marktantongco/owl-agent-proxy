@@ -6,6 +6,14 @@
 
 ---
 
+## Project Alignment
+
+**OWL Agent Proxy is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `run.sh` has no `serve` subcommand — cannot replace an `:8080` listener.
+
+**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (484 passing), not prose.
+
+---
+
 ## 10 Pipelines at a Glance
 
 | # | Pipeline | Trigger | Flow (abbreviated) |

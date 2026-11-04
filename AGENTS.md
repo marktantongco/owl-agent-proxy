@@ -1,15 +1,21 @@
 # OWL Agent Proxy — Agent Configuration
 
-This file configures agent skills for the OWL Agent Proxy project (v7.1).
+This file configures agent skills for the OWL Agent Proxy project.
 
 ## Project
 
 - **Name**: owl-agent-proxy
-- **Description**: Multi-protocol HTTP defense system with caching, deduplication, domain rate limiting, tier-based proxy rotation, upstream harvesting, honeypot detection, sticky sessions, and MCP server for AI agents.
-- **Entry point**: `proxy_defense.py`
+- **Description**: Client-side HTTP defense library + stdio MCP server + CLI. NOT a reverse proxy. Provides proxy pooling, caching, deduplication, domain rate limiting, tier-based proxy rotation, upstream harvesting, honeypot detection, sticky sessions, and MCP server for AI agents. `run.sh` has no `serve` subcommand — it cannot replace a :8080 listener.
+- **Entry point**: `proxy_defense.py` (client library) + `mcp_proxy_server.py` (stdio MCP server) + `run.sh` (CLI)
 - **Test command**: `python -m pytest tests/ -q`
 - **Verify command**: `python scripts/verify-install.py --owl-home <path> --no-live`
 - **CLI**: `./run.sh stats | fetch | harvest | mcp-selftest | verify`
+
+**Important alignment notes:**
+- The upstream repo is **not a reverse proxy** — it's a client-side library + stdio MCP server + CLI.
+- It cannot replace an `:8080` listener; `run.sh` has no `serve` subcommand.
+- Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 484 offline tests.
+- Docs have version drift (About says v3.0, README says v7.1). Trust the tests (484 passing), not the prose.
 
 ## Skills
 
@@ -64,6 +70,6 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 ## Conventions
 
 - Language: English
-- Testing: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets)
+- Testing: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 484 tests passing (trust tests over docs prose)
 - CI/CD: `.github/scripts/ci-check.sh` (protocol escalation + credential guard)
 - Precedence for config: explicit argument → `config.json` → built-in default
