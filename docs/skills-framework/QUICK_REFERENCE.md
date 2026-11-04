@@ -8,9 +8,9 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `run.sh` has no `serve` subcommand — cannot replace an `:8080` listener.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy with protocol escalation, circuit breaker, and load balancing.
 
-**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (484 passing), not prose.
+**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (507 passing), not prose.
 
 ---
 
@@ -35,7 +35,7 @@
 
 | Stage | Skills |
 |-------|--------|
-| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web, agent-skills, codemap |
+| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web, agent-skills, codemap, meta-skill, agent-reach, duckduckgo-search, exa-web-search-free |
 | PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman |
 | BUILD | writing-plans, executing-plans, subagent-driven-development, systematic-debugging, parallel-agent-skills |
 | VERIFY | verification-before-completion, systematic-debugging |
@@ -50,14 +50,18 @@
 |---|-------|-------|------------------|
 | 1 | agent-skills | DEFINE | Discover/install/manage skills from skills.sh ecosystem |
 | 2 | codemap | DEFINE | Map codebase structure — modules, dependencies, entry points, boundaries |
-| 3 | ralph-prompt-multi-task | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
-| 4 | orchestrate | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
-| 5 | chain-of-thought | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
-| 6 | headroom | PLAN | Assess capacity, constraints, resource availability before build |
-| 7 | Caveman | PLAN | Simplest solution first — prevent over-engineering during design |
-| 8 | parallel-agent-skills | BUILD | Execute multiple agent skills in parallel during implementation |
-| 9 | devils-advocate | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
-| 10 | impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
+| 3 | meta-skill | DEFINE | Discover and install skills when capability is missing |
+| 4 | agent-reach | DEFINE | Read/search across web platforms (Twitter, Reddit, YouTube, GitHub) |
+| 5 | duckduckgo-search | DEFINE | Free web search via DuckDuckGo — no API key |
+| 6 | exa-web-search-free | DEFINE | Free AI neural search via Exa MCP — no API key |
+| 7 | ralph-prompt-multi-task | PLAN | Generate phased prompts with sequential milestones |
+| 8 | orchestrate | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
+| 9 | chain-of-thought | PLAN | Step-by-step reasoning for architecture decisions |
+| 10 | headroom | PLAN | Assess capacity, constraints, resource availability before build |
+| 11 | Caveman | PLAN | Simplest solution first — prevent over-engineering during design |
+| 12 | parallel-agent-skills | BUILD | Execute multiple agent skills in parallel during implementation |
+| 13 | devils-advocate | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
+| 14 | impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ---
 
