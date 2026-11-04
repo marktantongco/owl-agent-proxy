@@ -1,0 +1,6 @@
+{
+  "reverse_proxy": {
+    "port": 8080,
+    "target_host": "http://localhost:3000"
+  }
+}

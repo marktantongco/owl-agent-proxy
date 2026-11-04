@@ -6,6 +6,7 @@ Subcommands:
     fetch <url> [--json] Fetch a URL through the proxy pool and print result
     harvest [--seconds N] Force one upstream harvest sweep
     mcp-selftest         Run MCP server initialize/tools/resources/ping selftest
+    serve [--port N] [--target HOST]  Run reverse proxy HTTP ingress
     verify [--no-live]   Run the installation verification suite
 """
 from __future__ import annotations
@@ -104,6 +105,18 @@ def cmd_mcp_selftest(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    import subprocess
+
+    cmd = [sys.executable, str(Path(__file__).parent / "reverse_proxy.py")]
+    if args.port is not None:
+        cmd += ["--port", str(args.port)]
+    if args.target is not None:
+        cmd += ["--target", args.target]
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     import subprocess
 
@@ -134,6 +147,11 @@ def main() -> int:
 
     p_mcp = sub.add_parser("mcp-selftest", help="Run MCP selftest")
     p_mcp.set_defaults(func=cmd_mcp_selftest)
+
+    p_serve = sub.add_parser("serve", help="Run reverse proxy HTTP ingress")
+    p_serve.add_argument("--port", type=int, default=None, help="Listen port")
+    p_serve.add_argument("--target", default=None, help="Upstream target host")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_verify = sub.add_parser("verify", help="Run installation verification")
     p_verify.add_argument("--no-live", action="store_true")
