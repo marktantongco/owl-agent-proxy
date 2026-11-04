@@ -32,6 +32,7 @@ The following skills are installed and available in this project:
 | `finishing-a-development-branch` | Merge/PR decision workflow |
 | `triage` | Grill vague reports into workable items |
 | `diagnosing-bugs` | Bug diagnosis workflow |
+| `agent-run` (grill-engineering) | Automated ticket delivery: implement → verify → repair → merge |
 
 ## Documentation Locations
 
@@ -39,6 +40,7 @@ The following skills are installed and available in this project:
 - Domain model: `docs/agents/domain.md`
 - Architecture docs: `docs/V7_UPSTREAM.md`, `docs/PROTOCOL_ESCALATION_GUIDE.md`, `docs/LAYERED_FALLBACK.md`
 - MCP integration: `docs/MCP_INTEGRATION.md`, `docs/STEALTH_BROWSER.md`
+- Delivery automation: `docs/agents/grill-engineering/INTEGRATION.md`
 
 ## Conventions
 
