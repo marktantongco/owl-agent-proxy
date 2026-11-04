@@ -17,7 +17,7 @@ This file configures agent skills for the OWL Agent Proxy project.
 - Protocol escalation: http/1.1 → http/2 → ja3 → websocket → browser → stealth
 - Circuit breaker: per-protocol failure tracking with cooldown
 - Load balancing: multiple upstream targets with health-aware round-robin
-- Trust the tests (484+ passing), not docs prose (version drift: About v3.0 vs README v7.1)
+- Trust the tests (507 passing), not docs prose (version drift: About v3.0 vs README v7.1)
 
 ## Skills
 
@@ -41,6 +41,25 @@ The following skills are installed and available in this project:
 | `triage` | Grill vague reports into workable items |
 | `diagnosing-bugs` | Bug diagnosis workflow |
 | `agent-run` (grill-engineering) | Automated ticket delivery: implement → verify → repair → merge |
+
+## Conceptual Skills (14 total, installed as stubs in `skills/`)
+
+| Skill | Stage | Source | Purpose |
+|-------|-------|--------|---------|
+| `agent-skills` | DEFINE | `skills/agent-skills/` | Discover/install/manage skills from skills.sh ecosystem |
+| `codemap` | DEFINE | `skills/codemap/` | Map codebase structure — modules, dependencies, entry points, boundaries |
+| `meta-skill` | DEFINE | `skills/meta-skill/` | Discover and install skills when capability is missing |
+| `agent-reach` | DEFINE | `skills/agent-reach/` | Read/search across web platforms (Twitter, Reddit, YouTube, GitHub) |
+| `duckduckgo-search` | DEFINE | `skills/duckduckgo-search/` | Free web search via DuckDuckGo — no API key |
+| `exa-web-search-free` | DEFINE | `skills/exa-web-search-free/` | Free AI neural search via Exa MCP — no API key |
+| `ralph-prompt-multi-task` | PLAN | `skills/ralph-prompt-multi-task/` | Generate phased prompts with sequential milestones |
+| `orchestrate` | PLAN | `skills/orchestrate/` | Meta-orchestrate multi-agent workflow across all pipeline stages |
+| `chain-of-thought` | PLAN | `skills/chain-of-thought/` | Step-by-step reasoning for architecture decisions |
+| `headroom` | PLAN | `skills/headroom/` | Assess capacity, constraints, resource availability before build |
+| `Caveman` | PLAN | `skills/Caveman/` | Simplest solution first — prevent over-engineering during design |
+| `parallel-agent-skills` | BUILD | `skills/parallel-agent-skills/` | Execute multiple agent skills in parallel during implementation |
+| `devils-advocate` | REVIEW | `skills/devils-advocate/` | Challenge assumptions, identify failure modes, stress-test before commit |
+| `impeccable` | REVIEW | `skills/impeccable/` | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ## 10 End-to-End Use-Case Pipelines
 
@@ -66,12 +85,14 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 - Architecture docs: `docs/V7_UPSTREAM.md`, `docs/PROTOCOL_ESCALATION_GUIDE.md`, `docs/LAYERED_FALLBACK.md`
 - MCP integration: `docs/MCP_INTEGRATION.md`, `docs/STEALTH_BROWSER.md`
 - Delivery automation: `docs/agents/grill-engineering/INTEGRATION.md`
-- Skills pipeline framework: `docs/skills-framework/10-PIPELINES.md` (10 use cases)
+- Skills pipeline framework: `docs/skills-framework/README.md` (full framework), `docs/skills-framework/10-PIPELINES.md` (10 use cases), `docs/skills-framework/QUICK_REFERENCE.md` (quick lookup)
+- Conceptual skill stubs: `skills/` (14 skill SKILL.md files)
 - Research investigation skill: `~/.agents/skills/research-investigation-pipeline/SKILL.md`
+- Reverse proxy: `reverse_proxy.py` (v2 with protocol escalation, circuit breaker, load balancing)
 
 ## Conventions
 
 - Language: English
-- Testing: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 484 tests passing (trust tests over docs prose)
+- Testing: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 507 tests passing (trust tests over docs prose)
 - CI/CD: `.github/scripts/ci-check.sh` (protocol escalation + credential guard)
 - Precedence for config: explicit argument → `config.json` → built-in default
