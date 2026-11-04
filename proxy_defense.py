@@ -1561,6 +1561,8 @@ class ResilientClient:
         resolved_persist_file = token_bucket_persist_file or config.get(
             "token_bucket_persist_file", TOKEN_BUCKET_PERSIST_FILE
         )
+        if resolved_persist_file:
+            resolved_persist_file = os.path.expanduser(str(resolved_persist_file))
         self.limiter = DomainRateLimiter(
             default_rate=rate_limit,
             persist_file=Path(resolved_persist_file) if resolved_persist_file else None,
