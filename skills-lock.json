@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "free-search-aggregator": {
+      "source": "vulcanusalex/free-search-aggregator",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "db4fc8fe9962be0903e2e934a915d67a1979b20df14ffe1dd6f5f349a856bb48"
+    },
+    "freeUnlimited-websearch": {
+      "source": "lngu/openclaw-skill-freeunlimited-websearch",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "1f7e961412bebe5dc27fab9a8879ab6ef95a2fbc777bed7ff24860a35c62d479"
+    },
+    "github-research": {
+      "source": "lingzhi227/agent-research-skills",
+      "sourceType": "github",
+      "skillPath": "skills/github-research/SKILL.md",
+      "computedHash": "e2fc4df5a6cbbf008732a416a8bb7103c8986d9b83f78fa1ea3296f8259ab8e0"
+    },
+    "parallel-deep-research": {
+      "source": "parallel-web/parallel-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/parallel-deep-research/SKILL.md",
+      "computedHash": "f8d7f91c855f5730ca3912c16f414b5064ad99be6b254570841fea06cc6ff5ed"
+    },
+    "parallel-findall": {
+      "source": "parallel-web/parallel-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/parallel-findall/SKILL.md",
+      "computedHash": "779785f4d42f7045c8e713adf32d3f3e3a36f22a41915b54619695d3886b387c"
+    },
+    "you-web": {
+      "source": "youdotcom-oss/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/you-web/SKILL.md",
+      "computedHash": "e04ce511db02754536c10fb8d85d2cb36772d8c6ae030baea291e58ce9ecd08e"
+    }
+  }
+}
