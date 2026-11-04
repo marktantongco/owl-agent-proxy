@@ -11,15 +11,15 @@
 | # | Pipeline | Trigger | Flow (abbreviated) |
 |---|----------|---------|-------------------|
 | 1 | Bug Fix | Something is broken | triage → diagnose → debug → plan → implement → verify → release |
-| 2 | Feature Development | You want something new | clarify → spec → approve → plan → implement → verify → release |
-| 3 | Security Fix | Something isn't safe | triage → diagnose → debug → plan → implement → verify → release |
-| 4 | Performance Optimization | It's too slow | triage → diagnose → debug → plan → implement → verify → release |
-| 5 | Documentation & Spec | People need to understand it | document → model → spec → plan → implement → verify → release |
-| 6 | Incident Response | Something big broke | triage → diagnose → debug → plan → implement → verify → release |
-| 7 | Refactoring | It's messy | clarify → spec → plan → implement → verify → release |
-| 8 | Dependency Update | Tools are old | assess → plan → implement → verify → release |
-| 9 | Architecture Review | You're changing the design | clarify → model → spec → plan → implement → verify → release |
-| 10 | Full Product Delivery | You're making something from scratch | approve → plan → implement → debug → verify → release → automate |
+| 2 | Feature Development | You want something new | discover → map → clarify → spec → approve → plan → reason → capacity → simple → implement → parallel → verify → challenge → quality → release |
+| 3 | Security Fix | Something isn't safe | triage → diagnose → debug → plan → implement → verify → challenge → quality → release |
+| 4 | Performance Optimization | It's too slow | triage → diagnose → debug → plan → implement → verify → challenge → quality → release |
+| 5 | Documentation & Spec | People need to understand it | discover → map → document → model → spec → recommend → plan → simple → implement → parallel → verify → challenge → quality → release |
+| 6 | Incident Response | Something big broke | triage → diagnose → debug → plan → implement → verify → challenge → quality → release |
+| 7 | Refactoring | It's messy | discover → map → clarify → spec → reason → capacity → simple → implement → parallel → verify → challenge → quality → release |
+| 8 | Dependency Update | Tools are old | discover → map → browse → find → capacity → plan → implement → parallel → verify → challenge → quality → release |
+| 9 | Architecture Review | You're changing the design | discover → map → clarify → spec → approve → plan → reason → capacity → simple → implement → parallel → verify → challenge → quality → release |
+| 10 | Full Product Delivery | You're making something from scratch | discover → map → approve → plan → orchestrate → reason → capacity → simple → implement → parallel → debug → verify → challenge → quality → release → automate |
 
 ---
 
@@ -27,12 +27,29 @@
 
 | Stage | Skills |
 |-------|--------|
-| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web |
-| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman, devils-advocate, codemap, parallel-agent-skills, agent-skills |
-| BUILD | writing-plans, executing-plans, subagent-driven-development, systematic-debugging |
+| DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web, agent-skills, codemap |
+| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman |
+| BUILD | writing-plans, executing-plans, subagent-driven-development, systematic-debugging, parallel-agent-skills |
 | VERIFY | verification-before-completion, systematic-debugging |
-| REVIEW | code-review, finishing-a-development-branch, impeccable |
+| REVIEW | code-review, finishing-a-development-branch, devils-advocate, impeccable |
 | SHIP | agent-run, finishing-a-development-branch |
+
+---
+
+## Conceptual Skills — 10 Stubs in `skills/`
+
+| # | Skill | Stage | One-line purpose |
+|---|-------|-------|------------------|
+| 1 | agent-skills | DEFINE | Discover/install/manage skills from skills.sh ecosystem |
+| 2 | codemap | DEFINE | Map codebase structure — modules, dependencies, entry points, boundaries |
+| 3 | ralph-prompt-multi-task | PLAN | Generate phased prompts with sequential milestones for multi-task breakdown |
+| 4 | orchestrate | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
+| 5 | chain-of-thought | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
+| 6 | headroom | PLAN | Assess capacity, constraints, resource availability before build |
+| 7 | Caveman | PLAN | Simplest solution first — prevent over-engineering during design |
+| 8 | parallel-agent-skills | BUILD | Execute multiple agent skills in parallel during implementation |
+| 9 | devils-advocate | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
+| 10 | impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
 
 ---
 
@@ -62,10 +79,10 @@ agent-run run <issue> --repo <owner/repo> # Automated ticket delivery
 | Gate | From → To | Condition |
 |------|-----------|-----------|
 | G1 | DEFINE → PLAN | Scope clarified |
-| G2 | PLAN → BUILD | PRD approved |
+| G2 | PLAN → BUILD | PRD approved, headroom confirmed |
 | G3 | BUILD → VERIFY | Code + tests done |
 | G4 | VERIFY → REVIEW | Tests pass |
-| G5 | REVIEW → SHIP | Review approved |
+| G5 | REVIEW → SHIP | Review approved, devils-advocate cleared, impeccable gate passed |
 | G6 | SHIP → Complete | Merged / closed |
 
 ---
@@ -84,5 +101,6 @@ agent-run doctor                                              # Delivery tool re
 
 - Full framework: `docs/skills-framework/README.md`
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
+- Conceptual skill stubs: `skills/` (10 SKILL.md files)
 - Research skill: `~/.agents/skills/research-investigation-pipeline/SKILL.md`
 - Project config: `AGENTS.md`
