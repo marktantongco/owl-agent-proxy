@@ -10,6 +10,14 @@
     "protocol_escalation": ["http/1.1", "http/2", "ja3", "websocket", "browser", "stealth"],
     "circuit_breaker_threshold": 5,
     "health_check_interval": 30,
-    "auto_load_proxies": true
+    "auto_load_proxies": true,
+    "stealth": {
+      "enabled": false,
+      "browser": "chrome124",
+      "user_agent_rotation": "sticky",
+      "stealth_headers": true,
+      "cookie_persistence": true,
+      "timing_jitter_ms": [500, 2500]
+    }
   }
 }

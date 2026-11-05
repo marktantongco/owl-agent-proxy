@@ -34,7 +34,7 @@ This file is the **single source of truth** for agents working on the OWL Agent 
 | **Test command** | `python -m pytest tests/ -q` |
 | **Verify command** | `python scripts/verify-install.py --owl-home <path> --no-live` |
 | **CLI** | `./run.sh stats \| fetch \| harvest \| mcp-selftest \| serve \| verify` |
-| **Version** | v7.1 (core) / v2 (reverse proxy) |
+| **Version** | v7.1 (core) / v2.1 (reverse proxy with stealth mode) |
 
 **Architecture alignment:**
 - Core: client-side library + stdio MCP server + CLI (NOT a reverse proxy by itself)
@@ -42,7 +42,9 @@ This file is the **single source of truth** for agents working on the OWL Agent 
 - Protocol escalation: http/1.1 → http/2 → ja3 → websocket → browser → stealth
 - Circuit breaker: per-protocol failure tracking with cooldown
 - Load balancing: multiple upstream targets with health-aware round-robin
-- Trust the tests (507 passing), not docs prose (version drift: About v3.0 vs README v7.1)
+- STEALTH MODE (v2.1): curl_cffi browser TLS/JA3/JA4 fingerprint impersonation, user-agent rotation,
+  stealth headers (Sec-CH-UA, Sec-Fetch-*), cookie persistence, timing jitter
+- Trust the tests, not docs prose (version drift: About v3.0 vs README v7.1)
 
 ---
 
@@ -54,12 +56,17 @@ flowchart TD
     C[Client / AI Agent] -->|HTTP Request| RP[reverse_proxy.py :PORT]
     
     %% Reverse Proxy Ingress Layer
-    subgraph RP_Ingress [Reverse Proxy Ingress — reverse_proxy.py v2]
+    subgraph RP_Ingress [Reverse Proxy Ingress — reverse_proxy.py v2.1]
         RP[HTTP Listener 0.0.0.0:PORT]
         CB[Circuit Breaker — per protocol, threshold 5]
         LB[Load Balancer — weighted round-robin + health-aware]
         PE[Protocol Escalation — http/1.1 → http/2 → ja3 → websocket → browser → stealth]
         HC[Health Check — every 30s on upstream targets]
+        SC[Stealth Client — curl_cffi browser impersonation]
+        UA[User-Agent Rotator — sticky/random/cycle]
+        SH[Stealth Headers — Sec-CH-UA, Sec-Fetch-*]
+        CJ[Cookie Jar — persistence by domain]
+        TJ[Timing Jitter — random delay between requests]
     end
     
     %% Egress Layer
@@ -106,10 +113,16 @@ flowchart TD
     RP --> LB
     RP --> PE
     RP --> HC
+    RP --> SC
+    RP --> UA
+    RP --> SH
+    RP --> CJ
+    RP --> TJ
     CB --> RC_Egress
     LB --> RC_Egress
     PE --> RC_Egress
     HC --> RC_Egress
+    SC --> RC_Egress
     
     PD --> PR
     PD --> HCache
@@ -137,13 +150,15 @@ flowchart TD
     
     %% Styling
     classDef ingress fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef stealth fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef egress fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef harvest fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    classDef persist fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef persist fill:#fff8e1,stroke:#ff6f00,stroke-width:2px
     classDef mcp fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     classDef upstream fill:#ffebee,stroke:#b71c1c,stroke-width:2px
     
     class RP,CB,LB,PE,HC ingress
+    class SC,UA,SH,CJ,TJ stealth
     class PD,PR,HCache,DD,RL,HD,VH egress
     class UH,SA,HD2,VP,PS harvest
     class PCJ,HSJ,TBJ persist
@@ -155,7 +170,8 @@ flowchart TD
 
 | Layer | Component | Responsibility |
 |-------|-----------|---------------|
-| **Ingress** | `reverse_proxy.py` | HTTP listener on `0.0.0.0:PORT`, circuit breaker, load balancing, protocol escalation, health checks |
+| **Ingress** | `reverse_proxy.py` | HTTP listener on `0.0.0.0:PORT`, circuit breaker, load balancing, protocol escalation, health checks, stealth mode |
+| **Stealth** | `StealthClient` / `UserAgentRotator` | curl_cffi browser TLS/JA3/JA4 impersonation, UA rotation, stealth headers, cookie jar, timing jitter |
 | **Egress** | `proxy_defense.py` | ResilientClient — proxy rotation, caching, dedup, rate limiting, honeypot detection, sticky sessions |
 | **Harvesting** | `proxy_harvester.py` | Upstream proxy discovery from 4 list endpoints, honeypot detection, session affinity, validation probe |
 | **Persistence** | `~/.owl-agent/` | `proxy_cache.json` (Pool state), `harvester_state.json` (harvest state), `token_buckets.json` (rate limit state) |
@@ -243,22 +259,23 @@ Follow these steps exactly to reproduce the complete development environment:
 ```bash
 git clone https://github.com/marktantongco/owl-agent-proxy.git
 cd owl-agent-proxy
-git checkout arena/0edc59d5-owl-agent-proxy
+git checkout arena/26f68c45-owl-agent-proxy
 ```
 
 ### Step 2: Install Python Dependencies
 
 ```bash
-pip3 install --break-system-packages pytest pytest-asyncio pytest-cov aiohttp aiofiles httpx
+pip3 install --break-system-packages pytest pytest-asyncio pytest-cov aiohttp aiofiles httpx curl_cffi
 ```
 
-### Step 3: Verify httpx Installation (required by harvester)
+### Step 3: Verify httpx and curl_cffi Installation
 
 ```bash
 python3 -c "import httpx; print('httpx', httpx.__version__)"
+python3 -c "import curl_cffi; print('curl_cffi', curl_cffi.__version__)"
 ```
 
-Expected: `httpx 0.28.1`
+Expected: `httpx 0.28.1` and `curl_cffi 0.17.0`
 
 ### Step 4: Create the Persistence Directory
 
@@ -358,6 +375,22 @@ python reverse_proxy.py --targets https://a.example.com,https://b.example.com
 ./run.sh serve --port 8080 --targets http://localhost:3000,http://localhost:3001
 ```
 
+### Step 10a: Run Stealth Mode Reverse Proxy
+
+```bash
+# Stealth mode with Chrome 124 TLS fingerprint impersonation
+python reverse_proxy.py --stealth-browser chrome124
+
+# Stealth mode via run.sh
+./run.sh serve --port 8080 --stealth-browser chrome124
+
+# Stealth mode with Safari 17
+python reverse_proxy.py --stealth-browser safari17 --targets https://a.example.com,https://b.example.com
+```
+
+Stealth mode uses curl_cffi to impersonate real-browser TLS/JA3/JA4 fingerprints.
+Requires outbound network access (sandboxed environments may block TLS).
+
 ### Step 11: Run CLI Subcommands
 
 ```bash
@@ -406,11 +439,11 @@ Expected 14 stubs: `agent-skills`, `codemap`, `meta-skill`, `agent-reach`, `duck
 | `proxy_harvester.py` | Upstream proxy harvester (38,444 bytes vendored) — UpstreamHarvester, HoneypotDetector, SessionAffinityManager, validate_proxy, SourceHealthTracker |
 | `mcp_proxy_server.py` | stdio MCP server for AI agents (41,180 bytes) |
 | `run.sh` | CLI wrapper — `stats`, `fetch`, `harvest`, `mcp-selftest`, `serve`, `verify` |
-| `reverse_proxy.py` | Optional HTTP ingress v2 (20,563 bytes) — ReverseProxy, CircuitBreaker, UpstreamTarget, aiohttp server |
-| `config.json` | Configuration — reverse_proxy section + core settings |
-| `scripts/verify-install.py` | Installation verification (18 PASS, 0 FAIL, 2 SKIP) |
-| `tests/test_reverse_proxy.py` | 30 reverse proxy tests |
-| `tests/` | Full test suite — 507 tests, 82% coverage |
+| `reverse_proxy.py` | Optional HTTP ingress v2.1 (20,563 bytes) — ReverseProxy, CircuitBreaker, UpstreamTarget, StealthClient, UserAgentRotator, aiohttp server, curl_cffi (lazy) |
+| `config.json` | Configuration — reverse_proxy section + stealth section + core settings |
+| `scripts/verify-install.py` | Installation verification |
+| `tests/test_reverse_proxy.py` | 41 reverse proxy tests (incl. 19 stealth mode tests) |
+| `tests/` | Full test suite |
 
 ### CLI Subcommands (`./run.sh`)
 
@@ -419,7 +452,7 @@ stats [--json]        Print pool/session/source health
 fetch <url> [--json]  Fetch a URL through the proxy pool
 harvest [--seconds N] Force one upstream harvest sweep
 mcp-selftest          Run MCP server selftest
-serve [--port N] [--target HOST] [--targets T1,T2]  Run reverse proxy HTTP ingress
+serve [--port N] [--target HOST] [--targets T1,T2] [--stealth-browser BROWSER]  Run reverse proxy HTTP ingress
 verify [--no-live]    Run installation verification suite
 ```
 
@@ -429,6 +462,7 @@ verify [--no-live]    Run installation verification suite
 --port N              Listen port (default: 8080, or config.json)
 --target HOST         Single upstream target host
 --targets T1,T2       Comma-separated upstream targets for load balancing
+--stealth-browser BROWSER  Enable stealth mode (chrome, chrome120, chrome124, safari, safari17, edge, edge99, firefox)
 ```
 
 ---
@@ -438,7 +472,7 @@ verify [--no-live]    Run installation verification suite
 ### Architecture
 
 ```
-Client -> :PORT (reverse_proxy.py) -> ResilientClient egress -> upstream target
+Client -> :PORT (reverse_proxy.py) -> [ResilientClient egress | StealthClient (stealth mode)] -> upstream target
 ```
 
 ### Components
@@ -449,6 +483,9 @@ Client -> :PORT (reverse_proxy.py) -> ResilientClient egress -> upstream target
 | `UpstreamTarget` | Health tracking per target — consecutive failures, error rate, healthy/unhealthy |
 | `ReverseProxy` | Main class — aiohttp server, protocol selection, upstream selection, request handling |
 | `HOP_BY_HOP_HEADERS` | Filtered headers: connection, keep-alive, proxy-authenticate, proxy-authorization, te, trailers, transfer-encoding, upgrade |
+| `StealthClient` | curl_cffi browser TLS/JA3/JA4 fingerprint impersonation (stealth mode) |
+| `UserAgentRotator` | Browser user-agent rotation (sticky / random / cycle) |
+| `StealthConfig` | Stealth configuration: browser profile, headers, cookies, jitter, proxy |
 
 ### Protocol Escalation Chain
 
@@ -474,6 +511,39 @@ Selection priority:
 - Fallback to all targets if none are healthy
 - Health check every 30s on `/health` endpoint
 
+### STEALTH MODE (v2.1)
+
+The `stealth` protocol uses **curl_cffi** (curl-impersonate) to impersonate real-browser
+TLS/JA3/JA4/HTTP2 fingerprints, bypassing anti-bot systems (Cloudflare, Akamai, DataDome,
+PerimeterX) that fingerprint non-browser TLS stacks.
+
+Stealth mode includes:
+- **Browser TLS impersonation** — curl_cffi with presets: chrome, chrome120, chrome124,
+  safari, safari17, edge, edge99, firefox
+- **User-Agent rotation** — sticky (per-target), random, or cycle rotation
+- **Stealth headers** — Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-Fetch-*,
+  Accept-Language, Upgrade-Insecure-Requests
+- **Cookie persistence** — domain-based cookie jar for session continuity
+- **Timing jitter** — random delay between requests (configurable min/max ms)
+
+Configuration in `config.json`:
+```json
+"stealth": {
+  "enabled": true,
+  "browser": "chrome124",
+  "user_agent_rotation": "sticky",
+  "stealth_headers": true,
+  "cookie_persistence": true,
+  "timing_jitter_ms": [500, 2500]
+}
+```
+
+CLI:
+```bash
+python reverse_proxy.py --stealth-browser chrome124
+./run.sh serve --stealth-browser chrome124
+```
+
 ### Configuration (`config.json` reverse_proxy section)
 
 ```json
@@ -489,7 +559,15 @@ Selection priority:
     "protocol_escalation": ["http/1.1", "http/2", "ja3", "websocket", "browser", "stealth"],
     "circuit_breaker_threshold": 5,
     "health_check_interval": 30,
-    "auto_load_proxies": true
+    "auto_load_proxies": true,
+    "stealth": {
+      "enabled": false,
+      "browser": "chrome124",
+      "user_agent_rotation": "sticky",
+      "stealth_headers": true,
+      "cookie_persistence": true,
+      "timing_jitter_ms": [500, 2500]
+    }
   }
 }
 ```
@@ -500,6 +578,7 @@ Selection priority:
 - `listen_port`, `target_hosts`, `targets_healthy` (url + healthy + error_rate)
 - `requests_total`, `requests_ok`, `requests_error`
 - `circuit_breaker` (failure count per protocol)
+- `stealth` (when enabled): browser, rotation, headers, cookies, request counts, active sessions
 
 ---
 
@@ -706,6 +785,14 @@ Combines:
 | https://github.com/andre-lmarinho/grillwith-tail | grill-with-tail skill |
 | https://github.com/okht/grill-powers | grill-powers skill |
 | https://github.com/hazikkhatri/superpowers | writing-plans, executing-plans, etc. |
+| https://github.com/lexiforest/curl_cffi | curl_cffi — browser TLS/JA3/JA4/HTTP2 fingerprint impersonation (stealth mode) |
+| https://brightdata.com/blog/web-data/web-scraping-with-curl-cffi | curl_cffi web scraping guide (2026) |
+| https://proxyhat.com/blog/tls-fingerprinting-explained | TLS fingerprinting JA3/JA4 mitigation |
+| https://proxyhat.com/blog/tls-impersonation-curl-cffi-guide | curl_cffi TLS impersonation guide |
+| https://trustmyip.com/blog/how-to-bypass-proxy-detection | Bypass proxy detection (TLS fingerprint, JA3/JA4) |
+| https://webdecoy.com/blog/ja4-fingerprinting-ai-scrapers-practical-guide | JA4 fingerprinting for AI scraper detection |
+| https://arxiv.org/html/2602.09606v1 | TLS fingerprinting bot detection research |
+| https://github.com/wi1dcard/fingerproxy | Fingerproxy — JA3/JA4/Akamai HTTP2 reverse proxy |
 
 ---
 
@@ -734,6 +821,7 @@ Combines:
 | #28 | Upgrade reverse proxy with protocol routing, circuit breaker, and research skills | Merged | (via #27 merge) |
 | #29 | Update AGENTS.md with conceptual skills, docs locations, and test counts | Merged | (via #30 merge) |
 | #30 | Add on-disk persistence to UpstreamHarvester and vendored pool engine | Merged | (merge commit on main) |
+| #31 | Stealth mode reverse proxy upgrade (curl_cffi TLS/JA3/JA4 impersonation) | Pending merge | — |
 
-**Current branch**: `arena/0edc59d5-owl-agent-proxy` (active)
-**Current commit**: `51e39f3` — Merge pull request #30 from marktantongco/arena/2d8b4d8b-owl-agent-proxy
+**Current branch**: `arena/26f68c45-owl-agent-proxy` (active)
+**Current commit**: `9f0eaf6` — Merge pull request #31 from marktantongco/arena/0edc59d5-owl-agent-proxy
