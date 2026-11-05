@@ -1,10 +1,11 @@
 """
-Model routing logic: local → free-tier cloud → paid fallback.
+Model routing logic: free catalog → paid fallback → local bulk engine.
 
 Routes requests based on:
-1. Task type (cheap/local for summarization, classification, extraction;
-   cloud for difficult reasoning, code generation)
-2. Client budget (local first if budget is tight)
+1. Task type (free catalog for routine tasks; paid fallback for complex
+   reasoning; local Ollama/vLLM as final free fallback)
+2. Client budget (free catalog first if budget is tight; paid only when
+   necessary; local as last resort regardless of budget)
 3. Provider health (circuit breaker state)
 4. Fallback chain when primary provider fails
 """
@@ -26,7 +27,8 @@ class ModelRoute:
     name: str
     provider: str  # "ollama", "vllm", "openai", "anthropic", etc.
     model_id: str
-    tier: int  # 1 = local (cheapest), 2 = free cloud, 3 = paid fallback
+    tier: int  # 1 = free catalog (cheapest, burst), 2 = paid fallback,
+               # 3 = local Ollama/vLLM (free, hardware cost only, last resort)
     api_base: Optional[str] = None
     api_key_env: Optional[str] = None  # Env var name — key lives in gateway env
     cost_per_1k_tokens: float = 0.0
@@ -63,54 +65,27 @@ class Router:
         self._build_default_routes()
 
     def _build_default_routes(self) -> None:
-        """Build the default route table."""
+        """Build the default route table.
+
+        Tier 1 (free catalog) is intentionally left empty here — it is
+        populated by wire_catalog_routes() from the vendored
+        awesome-free-llm-apis catalog. Tier 2 is paid fallback; tier 3 is
+        the local Ollama/vLLM bulk engine as a final free fallback.
+        """
         self.routes["default"] = [
-            # Tier 1 — Local bulk engine (free, hardware cost only)
-            ModelRoute(
-                name="ollama-qwen2.5-14b",
-                provider="ollama",
-                model_id="qwen2.5:14b",
-                tier=1,
-                api_base="http://127.0.0.1:11434",
-                cost_per_1k_tokens=0.0,
-                context_window=32768,
-            ),
-            # Tier 2 — Free-tier cloud burst
-            ModelRoute(
-                name="gpt-4o-mini-free",
-                provider="openai",
-                model_id="gpt-4o-mini",
-                tier=2,
-                api_base="https://api.openai.com/v1",
-                api_key_env="OPENAI_API_KEY",
-                cost_per_1k_tokens=0.15,
-                context_window=128000,
-            ),
-            # Tier 3 — Paid fallback
+            # Tier 2 — Paid fallback (only when free catalog is exhausted)
             ModelRoute(
                 name="claude-3-5-haiku-paid",
                 provider="anthropic",
                 model_id="claude-3-5-haiku-20241022",
-                tier=3,
+                tier=2,
                 api_base="https://api.anthropic.com",
                 api_key_env="ANTHROPIC_API_KEY",
                 cost_per_1k_tokens=0.80,
                 context_window=200000,
             ),
-        ]
-
-        self.routes["reasoning"] = [
             ModelRoute(
-                name="ollama-qwen2.5-14b",
-                provider="ollama",
-                model_id="qwen2.5:14b",
-                tier=1,
-                api_base="http://127.0.0.1:11434",
-                cost_per_1k_tokens=0.0,
-                context_window=32768,
-            ),
-            ModelRoute(
-                name="gpt-4o-mini-free",
+                name="gpt-4o-mini-paid",
                 provider="openai",
                 model_id="gpt-4o-mini",
                 tier=2,
@@ -119,15 +94,49 @@ class Router:
                 cost_per_1k_tokens=0.15,
                 context_window=128000,
             ),
+            # Tier 3 — Local bulk engine (free, hardware cost only, last resort)
+            ModelRoute(
+                name="ollama-qwen2.5-14b",
+                provider="ollama",
+                model_id="qwen2.5:14b",
+                tier=3,
+                api_base="http://127.0.0.1:11434",
+                cost_per_1k_tokens=0.0,
+                context_window=32768,
+            ),
+        ]
+
+        self.routes["reasoning"] = [
+            # Tier 2 — Paid fallback for complex reasoning
             ModelRoute(
                 name="claude-3-5-sonnet-paid",
                 provider="anthropic",
                 model_id="claude-3-5-sonnet-20241022",
-                tier=3,
+                tier=2,
                 api_base="https://api.anthropic.com",
                 api_key_env="ANTHROPIC_API_KEY",
                 cost_per_1k_tokens=3.00,
                 context_window=200000,
+            ),
+            ModelRoute(
+                name="gpt-4o-mini-paid",
+                provider="openai",
+                model_id="gpt-4o-mini",
+                tier=2,
+                api_base="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                cost_per_1k_tokens=0.15,
+                context_window=128000,
+            ),
+            # Tier 3 — Local bulk engine (free, hardware cost only)
+            ModelRoute(
+                name="ollama-qwen2.5-14b",
+                provider="ollama",
+                model_id="qwen2.5:14b",
+                tier=3,
+                api_base="http://127.0.0.1:11434",
+                cost_per_1k_tokens=0.0,
+                context_window=32768,
             ),
         ]
 
@@ -160,9 +169,9 @@ class Router:
         Select the best provider/model for a request.
 
         Priority:
-        1. Local models (tier 1) — always preferred if available
-        2. Free cloud (tier 2) — if local unavailable or budget constrained
-        3. Paid fallback (tier 3) — only when necessary and budget allows
+        1. Free catalog (tier 1) — burst capacity from 15 free providers
+        2. Paid fallback (tier 2) — only when necessary and budget allows
+        3. Local Ollama/vLLM (tier 3) — free, hardware cost only, last resort
 
         Args:
             task_type: Type of task (affects route table selection)
@@ -219,17 +228,18 @@ class Router:
         client_budget_tokens_remaining: int,
     ) -> str:
         """Human-readable reason for route selection."""
-        if route.is_local:
-            return f"Local model {route.model_id} — free (hardware cost only)"
-        if route.tier == 2:
+        if route.tier == 1:
             return (
-                f"Free-tier cloud {route.model_id} — "
+                f"Free catalog {route.provider}/{route.model_id} — "
                 f"~${route.cost_per_1k_tokens}/1K tokens"
             )
-        return (
-            f"Paid fallback {route.model_id} — "
-            f"~${route.cost_per_1k_tokens}/1K tokens"
-        )
+        if route.tier == 2:
+            return (
+                f"Paid fallback {route.model_id} — "
+                f"~${route.cost_per_1k_tokens}/1K tokens"
+            )
+        # tier 3 — local
+        return f"Local model {route.model_id} — free (hardware cost only, last resort)"
 
     def stats(self) -> dict:
         """Return router statistics."""

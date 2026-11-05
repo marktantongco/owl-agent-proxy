@@ -2,7 +2,7 @@
 Free catalog → router integration.
 
 Wires vendored awesome-free-llm-apis catalog routes into the gateway
-Router as tier-2 (free cloud) entries. Keeps Router free of catalog
+Router as tier-1 (free catalog) entries. Keeps Router free of catalog
 knowledge to avoid circular imports.
 """
 
@@ -24,13 +24,13 @@ def wire_catalog_routes(
     task_types: Optional[list[str]] = None,
 ) -> int:
     """
-    Load catalog routes and add them to the router as tier-2 (free cloud).
+    Load catalog routes and add them to the router as tier-1 (free catalog).
 
     Catalog routes are added to each specified task type (default: ["default"]),
-    positioned after tier-1 (local) routes and before tier-3 (paid) routes.
-    Within tier 2, routes are sorted by provider then model ID for deterministic
-    selection — the Router's existing route() method picks the first available
-    (cheapest healthy) provider.
+    positioned before tier-2 (paid fallback) and tier-3 (local Ollama/vLLM)
+    routes. Within tier 1, routes are sorted by provider then model ID for
+    deterministic selection — the Router's existing route() method picks the
+    first available (cheapest healthy) provider.
 
     Args:
         router: Router instance to extend.

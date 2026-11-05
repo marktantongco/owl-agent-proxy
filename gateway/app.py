@@ -3,7 +3,7 @@ OWL Agent Governed Token Plane — Gateway Service.
 
 FastAPI gateway that:
 1. Validates bearer tokens (clients present gateway token, never provider keys)
-2. Routes models: local (Ollama/vLLM) → free-tier cloud → paid fallback
+2. Routes models: free catalog → paid fallback → local Ollama/vLLM
 3. Rate limits per client
 4. Caches responses in Redis
 5. Tracks token/cost budgets per client
@@ -86,7 +86,7 @@ async def startup() -> None:
     from audit import AuditLogger
     audit = AuditLogger()
 
-    # Wire free catalog routes (tier 2) into the router
+    # Wire free catalog routes (tier 1) into the router
     try:
         from free_catalog.router_integration import wire_catalog_routes
         added = wire_catalog_routes(router)
@@ -196,10 +196,13 @@ async def chat_completions(
         return ChatResponse(**cached, cached=True)
 
     # ── Route selection ──
-    cb_availability = {
-        name: circuit_breaker.is_available(name)
-        for name in ["ollama", "openai", "anthropic"]
-    }
+    # Build circuit breaker availability from all known providers
+    cb_availability: Dict[str, bool] = {}
+    for routes in router.routes.values():
+        for r in routes:
+            cb_availability[r.provider] = circuit_breaker.is_available(
+                r.provider
+            )
     client = billing.get_budget(client_id)
     decision: Optional[RouteDecision] = router.route(
         task_type=request.task_type or "default",

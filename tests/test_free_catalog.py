@@ -98,11 +98,11 @@ class TestCatalogLoading:
 class TestRouteConversion:
     """Test converting catalog entries to ModelRoute objects."""
 
-    def test_routes_have_tier_2(self):
-        """All catalog routes are tier 2 (free cloud)."""
+    def test_routes_have_tier_1(self):
+        """All catalog routes are tier 1 (free catalog)."""
         routes = load_routes()
         for r in routes:
-            assert r.tier == 2
+            assert r.tier == 1
 
     def test_routes_have_provider_and_model(self):
         """Each route has provider and model_id set."""
@@ -220,8 +220,8 @@ class TestPaidVendorFiltering:
 class TestRouterIntegration:
     """Test wiring catalog routes into the Router."""
 
-    def test_wire_catalog_routes_adds_tier_2_routes(self):
-        """wire_catalog_routes adds catalog routes as tier 2 to the router."""
+    def test_wire_catalog_routes_adds_tier_1_routes(self):
+        """wire_catalog_routes adds catalog routes as tier 1 to the router."""
         router = Router()
         initial_count = router.stats()["total_routes"]
 
@@ -231,10 +231,10 @@ class TestRouterIntegration:
         stats = router.stats()
         assert stats["total_routes"] == initial_count + added
 
-        # All catalog routes should be tier 2
+        # All catalog routes should be tier 1
         for routes in router.routes.values():
             for r in routes:
-                if r.tier == 2 and r.provider != "openai":
+                if r.tier == 1:
                     assert r.provider in [
                         "aion-labs", "cohere", "gemini", "mistral",
                         "cloudflare-workers-ai", "groq", "kilo-code",
@@ -251,31 +251,36 @@ class TestRouterIntegration:
         assert stats["total_providers"] == 15
         assert stats["enabled_providers"] == 11
 
-    def test_route_selection_uses_catalog_providers(self):
-        """Router.route() can select catalog providers from tier 2."""
+    def test_route_selection_uses_catalog_first(self):
+        """Router.route() selects catalog providers (tier 1) before paid (tier 2) and local (tier 3)."""
         router = Router()
         wire_catalog_routes(router)
 
-        # With all circuits available and budget, should pick tier 1 (local) first
+        # With all circuits available and budget, should pick tier 1 (free catalog) first
         decision = router.route(
             task_type="default",
             client_budget_tokens_remaining=100000,
             client_cost_remaining_usd=10.0,
             circuit_breaker_available={
-                "ollama": True,
                 "openrouter": True,
                 "groq": True,
                 "cohere": True,
                 "gemini": True,
                 "mistral": True,
+                "anthropic": True,
+                "ollama": True,
             },
         )
         assert decision is not None
-        # Tier 1 (local Ollama) should be selected first
-        assert decision.provider == "ollama"
+        # Tier 1 (free catalog) should be selected before tier 2 (paid) and tier 3 (local)
+        assert decision.tier == 1
+        assert decision.provider in [
+            "openrouter", "groq", "cohere", "gemini", "mistral",
+            "aion-labs", "cloudflare-workers-ai", "kilo-code", "llm7", "nvidia-nim", "ovhcloud"
+        ]
 
-    def test_route_falls_back_to_catalog_when_local_unavailable(self):
-        """When local circuit is open, router falls back to tier 2 (catalog or openai)."""
+    def test_route_falls_back_to_paid_when_catalog_unavailable(self):
+        """When catalog circuits are open, router falls back to tier 2 (paid) or tier 3 (local)."""
         router = Router()
         wire_catalog_routes(router)
 
@@ -284,16 +289,26 @@ class TestRouterIntegration:
             client_budget_tokens_remaining=100000,
             client_cost_remaining_usd=10.0,
             circuit_breaker_available={
-                "ollama": False,  # Local circuit open
-                "openrouter": True,
-                "groq": True,
+                # All catalog providers have open circuits
+                "openrouter": False,
+                "groq": False,
+                "cohere": False,
+                "gemini": False,
+                "mistral": False,
+                "aion-labs": False,
+                "cloudflare-workers-ai": False,
+                "kilo-code": False,
+                "llm7": False,
+                "nvidia-nim": False,
+                "ovhcloud": False,
+                # Paid and local available
+                "anthropic": True,
                 "openai": True,
+                "ollama": True,
             },
         )
         assert decision is not None
-        assert decision.tier == 2
-        # Any tier-2 provider is acceptable (openai hardcoded or catalog)
-        assert decision.provider in ("openai", "openrouter", "groq")
+        assert decision.tier in (2, 3)  # Paid fallback or local
 
 
 # ── App integration test ──
