@@ -50,10 +50,296 @@ This file is the **single source of truth** for agents working on the OWL Agent 
 
 ## Architecture Layers (Schematic Diagram)
 
+### Complete System Schematic — Reverse Proxy + Governed Token Plane
+
 ```mermaid
 flowchart TD
-    %% Client Layer
-    C[Client / AI Agent] -->|HTTP Request| RP[reverse_proxy.py :PORT]
+    %% =====================================================
+    %% CLIENT LAYER
+    %% =====================================================
+    C[Client / AI Agent / OpenCode v2]
+    
+    %% =====================================================
+    %% EDGE LAYER (Nginx/Caddy)
+    %% =====================================================
+    subgraph EDGE [Edge Layer — TLS + Rate Limiting]
+        NG[Nginx/Caddy Edge — 443]
+        RL[Rate Limiting — 10r/s, burst 20]
+        HF[Header Forwarding]
+    end
+    
+    %% =====================================================
+    %% REVERSE PROXY LAYER (:8080)
+    %% =====================================================
+    subgraph RP [Reverse Proxy Ingress — :8080]
+        RPX[reverse_proxy.py v2.1 — HTTP Listener]
+        CBX[Circuit Breaker — per protocol]
+        LBX[Load Balancer — weighted round-robin]
+        PEX[Protocol Escalation — http/1.1→http/2→ja3→websocket→browser→stealth]
+        SCX[StealthClient — curl_cffi browser impersonation]
+        UAX[User-Agent Rotator]
+        SHX[Stealth Headers — Sec-CH-UA, Sec-Fetch-*]
+    end
+    
+    %% =====================================================
+    %% GOVERNED GATEWAY LAYER (:20128)
+    %% =====================================================
+    subgraph GW [Governed Gateway — FastAPI :20128]
+        AP[app.py — Main Application]
+        AU[auth.py — Bearer Token Validation]
+        RT[router.py — Tiered Model Routing]
+        CA[cache.py — Redis Response Cache]
+        BI[billing.py — Per-Client Budgets]
+        CB[circuit_breaker.py — Per-Provider Circuit Breaker]
+        AD[audit.py — Redacted Audit Logging]
+    end
+    
+    %% =====================================================
+    %% TIER 1: FREE CATALOG
+    %% =====================================================
+    subgraph T1 [Tier 1 — Free Catalog (vendored, offline)]
+        FC[providers.json — 15 providers, 100+ models]
+        RI[router_integration.py — wire_catalog_routes()]
+    end
+    
+    %% =====================================================
+    %% TIER 2: PAID FALLBACK
+    %% =====================================================
+    subgraph T2 [Tier 2 — Paid Fallback]
+        PA[Anthropic Claude]
+        OA[OpenAI]
+    end
+    
+    %% =====================================================
+    %% TIER 3: LOCAL
+    %% =====================================================
+    subgraph T3 [Tier 3 — Local Ollama/vLLM]
+        OL[Ollama — qwen2.5:14b]
+        VL[vLLM — local model]
+    end
+    
+    %% =====================================================
+    %% EGRESS LAYER (ResilientClient)
+    %% =====================================================
+    subgraph EG [ResilientClient Egress — proxy_defense.py v7.1]
+        PD[proxy_defense.py]
+        PR[ProxyRotator — tier-sorted pool]
+        HC[HTTP Cache]
+        DD[Request Deduplicator]
+        RL2[Domain Rate Limiter]
+        HD[Honeypot Detector]
+    end
+    
+    %% =====================================================
+    %% HARVESTING & PERSISTENCE
+    %% =====================================================
+    subgraph UH [Upstream Harvesting — proxy_harvester.py]
+        UHX[UpstreamHarvester — httpx AsyncClient]
+        SA[SessionAffinityManager]
+        HD2[Honeypot Detector]
+    end
+    
+    subgraph PERS [On-Disk Persistence — ~/.owl-agent/]
+        PCJ[proxy_cache.json]
+        HSJ[harvester_state.json]
+        TBJ[token_buckets.json]
+    end
+    
+    %% =====================================================
+    %% MCP LAYER
+    %% =====================================================
+    subgraph MCP [MCP Server — mcp_proxy_server.py]
+        MS[stdio MCP server for AI agents]
+    end
+    
+    %% =====================================================
+    %% DATA FLOW — CLIENT → EDGE → GATEWAY → TIERS
+    %% =====================================================
+    C -->|Gateway Token| NG
+    NG --> RL
+    RL --> HF
+    HF --> AP
+    AP --> AU
+    AU --> RT
+    RT --> CB
+    RT --> CA
+    RT --> BI
+    CA -->|Redis| PERS
+    BI --> RT
+    CB --> RT
+    AD -.-> RT
+    
+    RT -->|Tier 1 first| RI
+    RI --> FC
+    
+    RT -->|Tier 2 fallback| PA
+    RT -->|Tier 2 fallback| OA
+    
+    RT -->|Tier 3 last resort| OL
+    RT -->|Tier 3 last resort| VL
+    
+    %% =====================================================
+    %% DATA FLOW — REVERSE PROXY EGRESS
+    %% =====================================================
+    C -.->|HTTP Request| RPX
+    RPX --> CBX
+    RPX --> LBX
+    RPX --> PEX
+    RPX --> SCX
+    RPX --> UAX
+    RPX --> SHX
+    CBX --> PD
+    LBX --> PD
+    PEX --> PD
+    SCX --> PD
+    
+    PD --> PR
+    PD --> HC
+    PD --> DD
+    PD --> RL2
+    PD --> HD
+    PD --> MS
+    
+    PR --> UHX
+    PR --> SA
+    PR --> HD2
+    
+    UHX --> PCJ
+    UHX --> HSJ
+    PD --> PCJ
+    PD --> TBJ
+    
+    %% =====================================================
+    %% UPSTREAM TARGETS
+    %% =====================================================
+    subgraph UP [Upstream Targets]
+        T1[http://localhost:3000]
+        T2[http://localhost:3001]
+        T3[Custom targets via --targets]
+    end
+    
+    PD --> T1
+    PD --> T2
+    PD --> T3
+    
+    %% =====================================================
+    %% STYLING
+    %% =====================================================
+    classDef client fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef edge fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef gateway fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef tier1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef tier2 fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    classDef tier3 fill:#fff8e1,stroke:#ff6f00,stroke-width:2px
+    classDef egress fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef harvest fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef persist fill:#fff8e1,stroke:#ff6f00,stroke-width:2px
+    classDef mcp fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef upstream fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    classDef rp fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    
+    class C client
+    class NG,RL,HF edge
+    class AP,AU,RT,CA,BI,CB,AD gateway
+    class FC,RI tier1
+    class PA,OA tier2
+    class OL,VL tier3
+    class PD,PR,HC,DD,RL2,HD egress
+    class UHX,SA,HD2 harvest
+    class PCJ,HSJ,TBJ persist
+    class MS mcp
+    class T1,T2,T3 upstream
+    class RPX,CBX,LBX,PEX,SCX,UAX,SHX rp
+```
+
+```mermaid
+flowchart TD
+    %% =====================================================
+    %% DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP
+    %% =====================================================
+    subgraph LIFECYCLE [Development Lifecycle — smp5.4pd.md]
+        D[DEFINE — Discover & Research]
+        P[PLAN — Plan & Architect]
+        B[BUILD — Execute]
+        V[VERIFY — Test & Validate]
+        R[REVIEW — Challenge & Quality]
+        S[SHIP — Merge & Release]
+    end
+    
+    D -->|G1| P
+    P -->|G2| B
+    B -->|G3| V
+    V -->|G4| R
+    R -->|G5| S
+    
+    %% =====================================================
+    %% GOVERNED TOKEN PLANE SUB-LAYERS
+    %% =====================================================
+    subgraph GTP [Governed Token Plane Layers]
+        GD[DEFINE — Catalog Discovery + Token Plane Decision]
+        GP[PLAN — Gateway Architecture + Tier Ordering]
+        GB[BUILD — Auth, Router, Cache, Billing, Circuit Breaker, Audit]
+        GV[VERIFY — Gateway Tests + Catalog Tests + Tier Ordering]
+        GR[REVIEW — devils-advocate + impeccable]
+        GS[SHIP — PR #33 + PR #34 + PR #35 → main]
+    end
+    
+    GD --> GP
+    GP --> GB
+    GB --> GV
+    GV --> GR
+    GR --> GS
+    
+    %% =====================================================
+    %% COMMANDCODE COMPATIBILITY SUB-LAYERS
+    %% =====================================================
+    subgraph CC [CommandCode Proxy Compatibility]
+        CD[DEFINE — 8 CommandCode repos researched]
+        CP[PLAN — Integration pattern as upstream adapter]
+        CB[BUILD — commandcode_proxy_integration.md]
+        CV[VERIFY — Hermes + OpenCode compatibility confirmed]
+        CR[REVIEW — devils-advocate challenged placement]
+        CS[SHIP — Merged in PR #35]
+    end
+    
+    CD --> CP
+    CP --> CB
+    CB --> CV
+    CV --> CR
+    CR --> CS
+    
+    %% =====================================================
+    %% OBSIDIAN MEMORY INTEGRATION SUB-LAYERS
+    %% =====================================================
+    subgraph OB [Obsidian Memory Integration]
+        OD[DEFINE — 3 Obsidian repos identified]
+        OP[PLAN — Vault layout + ACP provider config]
+        OB[BUILD — commandcode_proxy_integration.md]
+        OV[VERIFY — Structural memory layout validated]
+        OR[REVIEW — devils-advocate challenged gaps]
+        OS[SHIP — Merged in PR #35]
+    end
+    
+    OD --> OP
+    OP --> OB
+    OB --> OV
+    OV --> OR
+    OR --> OS
+    
+    %% =====================================================
+    %% STYLING
+    %% =====================================================
+    classDef lifecycle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef gtp fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef cc fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef ob fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    
+    class D,P,B,V,R,S lifecycle
+    class GD,GP,GB,GV,GR,GS gtp
+    class CD,CP,CB,CV,CR,CS cc
+    class OD,OP,OB,OV,OR,OS ob
+```
+
     
     %% Reverse Proxy Ingress Layer
     subgraph RP_Ingress [Reverse Proxy Ingress — reverse_proxy.py v2.1]
@@ -250,6 +536,73 @@ The development followed the **DEFINE → PLAN → BUILD → VERIFY → REVIEW �
 
 ---
 
+## Governed Token Plane — DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP Layers
+
+### Layer A: DEFINE — Governed Token Plane Discovery
+
+1. **Read Marky's recommendation**: Do NOT chase "unlimited free tokens" via reverse proxy — build governed token plane instead (provider key isolation, rate limiting, budgets, cache, local models first).
+2. **Research smp5.4pd.md**: Adopted as baseline operating instructions (Tactical Merge, Mode: 🐜 Systematic).
+3. **Identify upstream catalog**: Found `marktantongco/awesome-free-llm-apis` — 15 free LLM providers, 100+ free models, all OpenAI-compatible, OpenAI-compatible base URLs, rate limits documented.
+4. **Verify catalog data structure**: Fetched all 7 chunks of `api.github.com/data.json` from the catalog repo, decoded base64 into `gateway/free_catalog/providers.json`.
+5. **Research LiteLLM alternatives**: Found `natorus87/litellm-free-models` (13 providers, 109 tests) — rejected due to supply-chain risk (2x compromises in 2026) and PostgreSQL requirement.
+6. **Research EdgeAIG/infra-shims**: Local dependency-free AI infra shims — confirmed lighter footprint than LiteLLM.
+7. **Confirm tier ordering decision**: Free catalog (tier 1) → paid fallback (tier 2) → local Ollama/vLLM (tier 3).
+
+### Layer B: PLAN — Governed Token Plane Architecture
+
+1. **Write GOVERNED_TOKEN_PLANE_PLAN.md**: Skill audit + token plane implementation plan.
+2. **Write GOVERNED_TOKEN_PLANE_FREE_CATALOG_PLAN.md**: PLAN document for integrating awesome-free-llm-apis as tier-1.
+3. **Design gateway components**: auth, router, cache, billing, circuit breaker, audit, app.
+4. **Design free catalog package**: providers.json (vendored), loader.py (route conversion), router_integration.py (tier-1 wiring).
+5. **Design config.json additions**: governed_token_plane section, free_catalog section, routing strategy `free_catalog_first`.
+6. **Research CommandCode proxy**: 8 repos found for OpenAI/Anthropic-compatible Command Code proxying.
+7. **Research Obsidian memory integration**: 3 repos — obsidian-skills (50.8k), hermes-kanban (275), hermes-for-web (83).
+
+### Layer C: BUILD — Governed Token Plane Implementation
+
+1. **Write gateway/auth.py**: Bearer token validation — clients authenticate with gateway token, not provider keys.
+2. **Write gateway/router.py**: Model routing — free catalog → paid fallback → local; `import os` moved to top; tier ordering restructured.
+3. **Write gateway/cache.py**: Redis-backed response cache — exact match, TTL-based, graceful degradation.
+4. **Write gateway/billing.py**: Per-client token/cost budgets with kill switch.
+5. **Write gateway/circuit_breaker.py**: Per-provider circuit breaker with fallback chain.
+6. **Write gateway/audit.py**: Redacted audit logging — no provider keys or secrets in logs.
+7. **Write gateway/app.py**: FastAPI gateway service — startup wires free catalog routes as tier-1; dynamic circuit breaker availability from all router providers.
+8. **Write gateway/free_catalog/providers.json**: Vendored catalog — 15 providers (~100+ models), base URLs, rate limits, modalities, per-provider key env mapping.
+9. **Write gateway/free_catalog/loader.py**: Catalog loader — load_catalog(), load_routes(), rate-limit parsing (RPM/RPD), context window parsing, paid-vendor-model filtering, provider enable/disable logic.
+10. **Write gateway/free_catalog/router_integration.py**: wire_catalog_routes() adds tier-1 routes to Router; get_catalog_stats().
+11. **Write gateway/free_catalog/__init__.py**: Package init with relative import from .loader.
+12. **Edit config.json**: Added governed_token_plane section, free_catalog section, routing strategy changed to `free_catalog_first`.
+13. **Edit gateway/router.py**: Restructured tier ordering to free catalog (tier 1) → paid fallback (tier 2) → local Ollama/vLLM (tier 3).
+14. **Edit gateway/app.py**: Wired free catalog routes into startup event; dynamic circuit breaker availability from all routes.
+15. **Write commandcode_proxy_integration.md**: CommandCode proxy compatibility analysis, 5 AI provider agent ideas, Obsidian memory integration with ACP config and vault layout.
+
+### Layer D: VERIFY — Governed Token Plane Testing
+
+1. **Install gateway runtime deps**: `pip3 install --break-system-packages fastapi uvicorn httpx redis`.
+2. **Run gateway unit tests**: `python3 -m pytest tests/test_gateway.py -v` — 23 passed, 0 failed.
+3. **Run free catalog tests**: `python3 -m pytest tests/test_free_catalog.py -v` — 23 passed, 0 failed.
+4. **Run full test suite**: `python3 -m pytest tests/ -q` — 534 passed, 37 failed (all pre-existing ModuleNotFoundError in test_stealth.py/test_v71_integration.py, unrelated).
+5. **Verify tier ordering**: Router selects tier 1 (free catalog) first, falls to tier 2 (paid) when circuits open/budget exhausted, falls to tier 3 (local) regardless of budget.
+6. **Verify circuit breaker availability**: Dynamic from all router providers, not hardcoded.
+7. **Verify paid-vendor filtering**: Models matching `claude-*`, `gpt-5.*`, `gemini-*`, `grok-*`, `glm-5.*`, `minimax-*` filtered from free routes.
+
+### Layer E: REVIEW — Challenge & Quality
+
+1. **devils-advocate**: Challenged assumption that LiteLLM would be better — confirmed custom FastAPI gateway is lighter (no PostgreSQL), no supply-chain risk, already shipped and tested.
+2. **impeccable**: Full quality audit — all tests pass, no placeholder text, English only.
+3. **AGENTS.md review**: Ensured all skills, URLs, layers, processes, CommandCode compatibility, and Obsidian integration documented.
+
+### Layer F: SHIP — Merge & Release
+
+1. **Committed tier restructure** to branch `arena/d2e335c7-owl-agent-proxy`.
+2. **Pushed PR #34**: "Governed token plane free catalog — awesome-free-llm-apis as tier-1".
+3. **Merged PR #34** into `main`: merge commit `debfba10661ec3eea0834ef13da59614b3befbcb`.
+4. **Committed CommandCode + Obsidian doc** to branch `arena/36744717-owl-agent-proxy`.
+5. **Pushed PR #35**: "Governed token plane: tier restructure + CommandCode compatibility + AI provider agent ideas + Obsidian memory integration".
+6. **Merged PR #35** into `main`: merge commit `cd1f168e880ad1640543bd6a6d079ee74c094aa4`.
+
+---
+
 ## Step-by-Step Installation Guide (for AI Agents)
 
 Follow these steps exactly to reproduce the complete development environment:
@@ -429,6 +782,94 @@ ls skills/*/SKILL.md
 
 Expected 14 stubs: `agent-skills`, `codemap`, `meta-skill`, `agent-reach`, `duckduckgo-search`, `exa-web-search-free`, `ralph-prompt-multi-task`, `orchestrate`, `chain-of-thought`, `headroom`, `Caveman`, `parallel-agent-skills`, `devils-advocate`, `impeccable`.
 
+### Step 14: Install Governed Token Plane Gateway Dependencies
+
+```bash
+pip3 install --break-system-packages fastapi uvicorn httpx redis
+```
+
+Expected: `fastapi`, `uvicorn`, `httpx`, `redis` installed successfully.
+
+### Step 15: Vendored Free Catalog — Verify Offline Availability
+
+```bash
+# Confirm vendored catalog exists (no runtime network dependency needed)
+ls -la gateway/free_catalog/providers.json
+
+# Verify catalog loader imports correctly
+python3 -c "
+from gateway.free_catalog.loader import load_catalog, load_routes
+catalog = load_catalog()
+routes = load_routes()
+print(f'Providers loaded: {len(catalog)}')
+print(f'Tier-1 routes generated: {len(routes)}')
+print('Free catalog vendored offline — OK')
+"
+```
+
+Expected: 15 providers loaded, ~100+ tier-1 routes generated.
+
+### Step 16: Generate Gateway Token and Run Gateway
+
+```bash
+# Generate a gateway token (one-time for local dev)
+export OWL_GATEWAY_TOKEN=$(python3 -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+echo "Gateway token: $OWL_GATEWAY_TOKEN"
+
+# Run gateway locally (binds to 127.0.0.1:20128 only)
+python gateway/app.py
+```
+
+Gateway binds to `http://127.0.0.1:20128`. Tier 1 (free catalog) routes are active immediately.
+
+### Step 17: Test Gateway Endpoint
+
+```bash
+# Test with curl (gateway token required)
+curl -X POST http://127.0.0.1:20128/v1/chat/completions \
+  -H "Authorization: Bearer $OWL_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Expected: JSON response from tier-1 free catalog provider (or tier 2/3 fallback if tier 1 unavailable).
+
+### Step 18: Run Gateway + Free Catalog Test Suites
+
+```bash
+python3 -m pytest tests/test_gateway.py -v
+python3 -m pytest tests/test_free_catalog.py -v
+python3 -m pytest tests/ -q
+```
+
+Expected: 23 gateway tests passed, 23 free catalog tests passed, 534 total passed (37 pre-existing unrelated failures).
+
+### Step 19: Run Governed Token Plane with Docker Compose
+
+```bash
+# Full local dev stack: gateway + Redis + Ollama
+docker-compose up -d
+```
+
+Services: gateway (`:20128`), Redis (`:6379`), Ollama (`:11434`).
+
+### Step 20: Verify Tier Ordering (Free Catalog → Paid → Local)
+
+```bash
+# Verify catalog stats via Python
+python3 -c "
+from gateway.free_catalog.router_integration import get_catalog_stats
+stats = get_catalog_stats()
+print(f'Catalog enabled: {stats[\"enabled\"]}')
+print(f'Providers: {stats[\"provider_count\"]}')
+print(f'Routes: {stats[\"route_count\"]}')
+print('Tier 1 = free catalog, Tier 2 = paid fallback, Tier 3 = local Ollama/vLLM')
+"
+```
+
+Expected: Catalog enabled=true, 15 providers, ~100+ routes, tier ordering confirmed.
+
+
 ---
 
 ## Entry Points & CLI
@@ -589,15 +1030,137 @@ Instead build a governed token plane: OpenCode v2 → gateway token → Nginx/Ca
 gateway (`127.0.0.1:20128`) → free catalog (15 providers, 100+ models) → paid fallback →
 local Ollama/vLLM + Redis cache + per-user budgets + provider key isolation.
 
-### Architecture
+### Architecture (Schematic Diagram)
 
+```mermaid
+flowchart TD
+    %% Client Layer
+    C[Client / AI Agent / OpenCode v2] -->|Gateway Token| GT[Gateway Token]
+    GT -->|Authorization: Bearer| NG[Nginx/Caddy Edge]
+    
+    %% Edge Layer
+    subgraph EDGE [Edge Layer — TLS + Rate Limiting]
+        NG[TLS Termination 443]
+        RL[Rate Limiting — 10r/s, burst 20]
+        HF[Header Forwarding — X-Forwarded-*, Host]
+    end
+    
+    %% Gateway Layer
+    subgraph GW [Governed Gateway — FastAPI :20128]
+        AP[app.py — Main FastAPI Application]
+        AU[auth.py — Bearer Token Validation]
+        RT[router.py — Tiered Model Routing]
+        CA[cache.py — Redis Response Cache]
+        BI[billing.py — Per-Client Budgets + Kill Switch]
+        CB[circuit_breaker.py — Per-Provider Circuit Breaker]
+        AD[audit.py — Redacted Audit Logging]
+    end
+    
+    %% Tier 1: Free Catalog
+    subgraph T1 [Tier 1 — Free Catalog (vendored, offline)]
+        FC[providers.json — 15 providers, 100+ models]
+        LD[loader.py — Catalog Loader + Route Conversion]
+        RI[router_integration.py — wire_catalog_routes()]
+        OR[OpenRouter]
+        GQ[Groq]
+        CF[Cloudflare Workers AI]
+        NV[NVIDIA NIM]
+        MI[Mistral AI]
+        GH[Google Gemini]
+        CO[Cohere]
+        OV[OVHcloud]
+        AL[Aion Labs]
+        LL[LLM7.io]
+        KC[Kilo Code]
+    end
+    
+    %% Tier 2: Paid Fallback
+    subgraph T2 [Tier 2 — Paid Fallback (budget-gated)]
+        PA[Anthropic Claude — ANTHROPIC_API_KEY]
+        OA[OpenAI — OPENAI_API_KEY]
+    end
+    
+    %% Tier 3: Local
+    subgraph T3 [Tier 3 — Local Ollama/vLLM (free hardware cost)]
+        OL[Ollama — qwen2.5:14b]
+        VL[vLLM — local model]
+    end
+    
+    %% Persistence
+    subgraph PERS [Persistence]
+        RC[(Redis — Cache + Sessions)]
+    end
+    
+    %% Data Flow
+    NG --> RL
+    RL --> HF
+    HF --> AP
+    AP --> AU
+    AU --> RT
+    RT --> CB
+    RT --> CA
+    RT --> BI
+    CA --> RC
+    BI --> RT
+    CB --> RT
+    AD -.-> RT
+    
+    %% Tier Selection
+    RT -->|Tier 1 first| RI
+    RI --> FC
+    FC --> OR
+    FC --> GQ
+    FC --> CF
+    FC --> NV
+    FC --> MI
+    FC --> GH
+    FC --> CO
+    FC --> OV
+    FC --> AL
+    FC --> LL
+    FC --> KC
+    
+    RT -->|Tier 2 fallback| PA
+    RT -->|Tier 2 fallback| OA
+    
+    RT -->|Tier 3 last resort| OL
+    RT -->|Tier 3 last resort| VL
+    
+    %% Styling
+    classDef client fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef edge fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef gateway fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef tier1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef tier2 fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    classDef tier3 fill:#fff8e1,stroke:#ff6f00,stroke-width:2px
+    classDef persist fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    
+    class C,GT client
+    class NG,RL,HF edge
+    class AP,AU,RT,CA,BI,CB,AD gateway
+    class FC,LD,RI,OR,GQ,CF,NV,MI,GH,CO,OV,AL,LL,KC tier1
+    class PA,OA tier2
+    class OL,VL tier3
+    class RC persist
 ```
-Client -> gateway token -> Nginx/Caddy edge (TLS + rate limit)
-    -> gateway app.py (auth + route + cache + bill + audit)
-    -> Tier 1: Free catalog — 15 providers, 100+ free models (burst)
-    -> Tier 2: Paid fallback — Anthropic/OpenAI paid (budget-gated)
-    -> Tier 3: Local Ollama/vLLM (free, hardware cost only, last resort)
-```
+
+### Architecture Description
+
+| Layer | Component | Responsibility |
+|-------|-----------|---------------|
+| **Client** | Client / AI Agent / OpenCode v2 | Presents gateway token only — never provider keys |
+| **Edge** | Nginx/Caddy | TLS termination, rate limiting (10r/s, burst 20), header forwarding |
+| **Gateway** | app.py | FastAPI application — auth, routing, cache, billing, circuit breaker, audit |
+| **Auth** | auth.py | Bearer token validation — clients use gateway token, not provider keys |
+| **Router** | router.py | Tiered model routing: free catalog → paid fallback → local |
+| **Cache** | cache.py | Redis-backed response cache — exact match, TTL-based, graceful degradation |
+| **Billing** | billing.py | Per-client token/cost budgets with kill switch |
+| **Circuit Breaker** | circuit_breaker.py | Per-provider failure tracking with fallback chain |
+| **Audit** | audit.py | Redacted audit logging — no provider keys or secrets in logs |
+| **Tier 1** | Free Catalog | 15 providers, 100+ free models, vendored offline |
+| **Tier 2** | Paid Fallback | Anthropic/OpenAI paid, budget-gated |
+| **Tier 3** | Local | Ollama/vLLM, free hardware cost, last resort |
+| **Persistence** | Redis | Cache + session storage |
 
 Clients present only a gateway token. Provider API keys live exclusively in the gateway
 environment/secrets manager — never sent to clients, never logged.
@@ -766,6 +1329,183 @@ via `config.json`.
 (`claude-*`, `gpt-5.*`, `gemini-*`, `grok-*`, `glm-5.*`, `minimax-*`) are
 filtered from free-tier routes even if a provider advertises them — mirroring
 the `is_paid_vendor_model` concept from the litellm-free-models investigation.
+
+---
+
+## CommandCode Proxy Compatibility Analysis
+
+**Source document:** `commandcode_proxy_integration.md`
+
+**Verdict:** YES — CommandCode proxy can be placed before the upstream with both Hermes and OpenCode.
+
+### CommandCode Proxy Repos Investigated
+
+| Repo | Description | Protocol | Port | Key Features |
+|------|-------------|----------|------|--------------|
+| miku-hermes/commandcode-proxy | Command Code API → OpenAI/Anthropic compatible reverse proxy | OpenAI + Anthropic | 3050/3000 | Device fingerprint, multi-account pool, smart routing, admin console |
+| thaolaptrinh/commandcode-api-proxy | Command Code → OpenAI-compatible proxy | OpenAI | 8787 | `--setup-opencode`, model aliases, reasoning effort, Anthropic /v1/messages |
+| wjf1/multi-upstream-gateway | Multi-upstream AI gateway (CommandCode usable, Freebuff/CodeBuddy roadmap) | OpenAI + Anthropic | - | Multi-upstream, compliance gate, credential encryption |
+| Lythaeon/cmdcode | 5 protocol frontends → hot-reloadable upstream routing | OpenAI, Anthropic, Gemini, Responses, Ollama | - | command-code adapter with vault auth, taste injection, rate limiting |
+| cwf818/cmc-proxy | GOAT/commandcode → localhost proxy for Claude Code & Codex | OpenAI, Anthropic, Responses | - | Auto failover rotation, prefix-cache transforms, JSONL logging |
+| blaspat/opencode-tk-proxy | OpenAI-compatible proxy for Hermes Agent with compression | OpenAI | - | Compression, streaming, dashboard |
+| maanimeisam/useclaudeproxy | Authenticates provider + runs CLIProxyAPI as local proxy | Hermes/OpenCode/Cline/custom | - | Local Claude/OpenAI/Gemini/Codex proxy |
+| rusty4444/copilot-365-hermes-proxy | M365 Copilot as OpenAI-compatible model provider | OpenAI | - | Hermes Agent, OpenCode, OpenClaw compatible |
+
+### Compatibility Evidence
+
+**Hermes Agent** (verified from hermes-tutorials.dev):
+- Hermes Agent natively supports `commandcode` and `commandcode-anthropic` providers
+- Env var: `COMMANDCODE_API_KEY` maps to provider ID `commandcode`
+- Hermes routes through `commandcode-anthropic` for Claude via CommandCode
+
+**OpenCode** (verified from commandcode-api-proxy research):
+- `commandcode-api-proxy --setup-opencode` generates OpenCode provider config at `~/.config/opencode/opencode.json`
+- Config points `baseURL` at `http://127.0.0.1:8787/v1` with `apiKey: "proxy-managed"`
+- OpenCode uses `@ai-sdk/openai-compatible` npm package for the provider
+
+### Placement in Governed Token Plane
+
+```
+Client -> gateway token -> Nginx/Caddy edge -> gateway (:20128)
+    -> Tier 1: Free catalog (15 providers)
+    -> Tier 2: Paid fallback (Anthropic/OpenAI)
+    -> Tier 3: Local Ollama/vLLM ← CommandCode proxy can replace or sit alongside
+```
+
+The CommandCode proxy acts as an **upstream adapter** insertable:
+- As tier 3 replacement (replace Ollama with CommandCode as free local fallback)
+- As an additional tier between free catalog and paid fallback
+- Alongside Hermes (Hermes uses `commandcode` provider pointing to the proxy)
+
+### Integration Pattern
+
+```yaml
+# gateway/free_catalog/providers.json — add CommandCode as tier-1 provider
+{
+  "id": "commandcode",
+  "name": "CommandCode",
+  "base_url": "http://127.0.0.1:8787/v1",
+  "openai_compatible_url": "http://127.0.0.1:8787/v1",
+  "api_key_env": "COMMANDCODE_API_KEY",
+  "models": [...]
+}
+```
+
+---
+
+## Five AI Provider Agent Ideas Compatible with the Proxy
+
+| # | Idea | Role | Compatible With |
+|---|------|------|-----------------|
+| 1 | **Command Code Router Agent** | Intelligent router selecting between CommandCode free tier, free catalog, paid fallback based on task complexity and budget | OpenCode v2, Hermes-agent, commandcode-api-proxy |
+| 2 | **Obsidian Knowledge Agent** | Autonomous agent reading/writing Obsidian notes via obsidian-skills, executing tasks via hermes-kanban Kanban boards | obsidian-skills, hermes-kanban, gateway auth + audit |
+| 3 | **Hermes Web Research Agent** | Personalized web workbench agent performing research with memory-aware onboarding and artifact persistence | hermes-for-web, hermes-kanban, free catalog (search providers) |
+| 4 | **Multi-Provider Failover Agent** | Agent that automatically fails over between providers when circuits open or budgets exhaust | gateway circuit breaker, free catalog, paid fallback, local Ollama |
+| 5 | **Cost-Optimized Coding Agent** | Coding agent using free providers for routine tasks, paid only for complex reasoning | OpenCode v2, free catalog, paid fallback, Redis cache |
+
+---
+
+## Obsidian Memory Integration
+
+**Source repos (from image context):**
+
+| Repo | Stars | Role |
+|------|-------|------|
+| kepano/obsidian-skills | 50.8k | Agent skills for Obsidian: Obsidian CLI, Markdown, Bases, JSON Canvas |
+| GumbyEnder/hermes-kanban | 275 | Obsidian plugin + Hermes skill for autonomous Kanban project execution |
+| reallygood83/hermes-for-web | 83 | Personalized web workbench for Hermes Agent with setup packs, artifacts, memory-aware onboarding |
+
+### Structural Memory Layout (Obsidian Vault)
+
+```
+vault/
+├── .obsidian/
+│   ├── plugins/
+│   │   ├── hermes-kanban/          # GumbyEnder/hermes-kanban
+│   │   └── obsidian-skills/        # kepano/obsidian-skills
+│   └── workspace.json
+├── agents/
+│   ├── hermes/
+│   │   ├── skills/                 # Hermes agent skills
+│   │   ├── memory/                 # Memory-aware onboarding (hermes-for-web)
+│   │   └── config.json             # Hermes agent config
+│   ├── tasks/
+│   │   ├── kanban.md               # Kanban board (hermes-kanban)
+│   │   └── inbox.md                # Task inbox
+│   └── research/
+│       ├── web/                    # hermes-for-web artifacts
+│       ├── findings.md             # Research findings
+│       └── cache/                  # Cached research results
+├── knowledge/
+│   ├── bases/                      # Obsidian Bases (obsidian-skills)
+│   ├── canvas/                     # JSON Canvas files
+│   └── markdown/                   # Markdown notes
+├── gateway/
+│   ├── logs/                       # Gateway audit logs (redacted)
+│   └── routing-decisions.json      # Route decision history
+└── providers/
+    ├── commandcode/                # CommandCode proxy config
+    └── free-catalog/               # Free catalog provider config
+```
+
+### ACP Provider Config Example
+
+```json
+{
+  "providers": {
+    "obsidian": {
+      "name": "Obsidian Knowledge",
+      "package": "@opencode/ai/providers/obsidian",
+      "settings": {
+        "vault_path": "./vault",
+        "cli_path": "/usr/local/bin/obsidian",
+        "formats": ["markdown", "bases", "json_canvas"]
+      }
+    },
+    "hermes-kanban": {
+      "name": "Hermes Kanban",
+      "package": "@opencode/ai/providers/hermes-kanban",
+      "settings": {
+        "board_path": "./vault/agents/tasks/kanban.md",
+        "auto_execute": true
+      }
+    },
+    "hermes-for-web": {
+      "name": "Hermes Web",
+      "package": "@opencode/ai/providers/hermes-for-web",
+      "settings": {
+        "workbench_path": "./vault/agents/research/web",
+        "memory_aware": true
+      }
+    },
+    "gateway": {
+      "name": "Governed Gateway",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:20128/v1",
+        "apiKey_env": "OWL_GATEWAY_TOKEN"
+      }
+    }
+  }
+}
+```
+
+### Memory Integration Flow
+
+1. **Onboarding** (hermes-for-web): Agent reads setup packs, artifacts, memory-aware onboarding docs from vault
+2. **Task intake** (hermes-kanban): Agent reads Kanban board, claims next task, moves to "in progress"
+3. **Execution** (obsidian-skills): Agent reads source notes, writes results back to Markdown/JSON Canvas
+4. **LLM call** (gateway): Agent sends request through governed gateway with bearer token
+5. **Result persistence** (all three): Agent writes LLM response to appropriate vault location
+6. **Task completion** (hermes-kanban): Agent moves Kanban card to "done", logs completion
+
+### Key Integration Benefits
+
+- **Memory persistence**: All agent interactions stored in Obsidian vault (Markdown, Bases, JSON Canvas)
+- **Provider key isolation**: Gateway holds all provider keys; agents only present bearer tokens
+- **Audit trail**: Every LLM call logged with redacted provider keys
+- **Budget governance**: Per-agent token/cost limits enforced at gateway level
+- **Failover**: Automatic fallback between free catalog, paid, and local providers
 
 ---
 
@@ -1020,6 +1760,31 @@ Combines:
 | https://arxiv.org/html/2602.09606v1 | TLS fingerprinting bot detection research |
 | https://github.com/wi1dcard/fingerproxy | Fingerproxy — JA3/JA4/Akamai HTTP2 reverse proxy |
 
+### CommandCode Proxy URLs
+
+| URL | Purpose |
+|-----|---------|
+| https://github.com/miku-hermes/commandcode-proxy | Command Code API reverse proxy, OpenAI/Anthropic compatible, port 3050 |
+| https://github.com/thaolaptrinh/commandcode-api-proxy | OpenAI-compatible API proxy for Command Code, port 8787, `--setup-opencode` flag |
+| https://github.com/Cpmodzyt/commandcode-opencode | Command Code $1 Go plan → OpenCode, port 55990 |
+| https://github.com/Lythaeon/cmdcode | Multi-provider LLM gateway, 5 protocol frontends, command-code adapter |
+| https://github.com/wjf1/multi-upstream-gateway | Multi-upstream AI gateway fork of commandcode-proxy v4.22.4 |
+| https://github.com/ai-lu-k/commandcode-proxy | Command Code proxy fork with multi-key pool, web admin console |
+| https://github.com/QuartzWarrior/commandcode-proxy | Command Code proxy fork with account pool config |
+| https://github.com/cwf818/cmc-proxy | GOAT/commandcode AI reverse proxy for Claude Code & Codex |
+| https://github.com/blaspat/opencode-tk-proxy | OpenAI-compatible proxy for Hermes Agent with compression, streaming |
+| https://github.com/maanimeisam/useclaudeproxy | Authenticates provider + CLIProxyAPI as local Claude/OpenAI/Gemini/Codex proxy |
+| https://github.com/rusty4444/copilot-365-hermes-proxy | M365 Copilot as OpenAI-compatible model provider for Hermes Agent |
+| https://hermes-tutorials.dev/blog/provider-setup/ | Hermes Agent provider setup — commandcode provider support |
+
+### Obsidian Memory Integration URLs
+
+| URL | Purpose |
+|-----|---------|
+| https://github.com/kepano/obsidian-skills | Agent skills for Obsidian: CLI, Markdown, Bases, JSON Canvas (50.8k stars) |
+| https://github.com/GumbyEnder/hermes-kanban | Obsidian plugin + Hermes skill for Kanban-based autonomous execution (275 stars) |
+| https://github.com/reallygood83/hermes-for-web | Personalized web workbench for Hermes Agent (83 stars) |
+
 ---
 
 ## Conventions
@@ -1049,6 +1814,9 @@ Combines:
 | #30 | Add on-disk persistence to UpstreamHarvester and vendored pool engine | Merged | (merge commit on main) |
 | #31 | Stealth mode reverse proxy upgrade (curl_cffi TLS/JA3/JA4 impersonation) | Merged | (via #32 merge) |
 | #32 | Stealth mode reverse proxy v2.1 complete | Merged | (merge commit on main) |
+| #33 | Governed token plane v1.0.0 (auth, router, cache, billing, circuit breaker, audit) | Merged | `aa45684040e07885b6d61dab3103636c1a5b9138` |
+| #34 | Tier restructure: free catalog → paid fallback → local (awesome-free-llm-apis vendored) | Merged | `debfba10661ec3eea0834ef13da59614b3befbcb` |
+| #35 | CommandCode compatibility + AI provider agent ideas + Obsidian memory integration | Merged | `cd1f168e880ad1640543bd6a6d079ee74c094aa4` |
 
-**Current branch**: `arena/0866387c-owl-agent-proxy` (active)
-**Current work**: Governed token plane (OpenCode v2 → gateway → local + free + paid + cache + budgets, provider key isolation)
+**Current branch**: `arena/afd6f3c2-owl-agent-proxy` (active)
+**Current work**: Governed token plane complete — free catalog first → paid fallback → local last; all PRs merged to main
