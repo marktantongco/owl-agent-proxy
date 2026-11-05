@@ -695,6 +695,71 @@ curl -X POST http://127.0.0.1:20128/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+### Free Catalog Integration (`gateway/free_catalog/`)
+
+The gateway's tier-2 (free cloud) routing is populated from
+`marktantongco/awesome-free-llm-apis` — a curated catalog of 15 free LLM
+providers with 100+ free models. The catalog is vendored locally
+(`gateway/free_catalog/providers.json`) so the gateway works offline on
+bare-metal laptops with no runtime network dependency.
+
+| File | Purpose |
+|------|---------|
+| `gateway/free_catalog/providers.json` | Vendored catalog — 15 providers, base URLs, rate limits, models |
+| `gateway/free_catalog/loader.py` | Loads and validates catalog, converts to `ModelRoute` objects |
+| `gateway/free_catalog/router_integration.py` | Wires catalog routes into `Router` as tier-2 entries |
+| `tests/test_free_catalog.py` | 23 unit tests — catalog loading, route conversion, rate limit parsing, paid vendor filtering, router integration |
+
+**15 providers (11 enabled by default, 4 require opt-in):**
+
+| Provider | Type | Enabled | API Key Env | Notes |
+|----------|------|---------|-------------|-------|
+| Aion Labs | provider_api | ✅ | `AION_API_KEY` | Roleplay/storytelling, 15 RPM |
+| Cohere | provider_api | ✅ | `COHERE_API_KEY` | 1,000 calls/month |
+| Google Gemini | provider_api | ✅ | `GEMINI_API_KEY` | 1M context, no published limits |
+| Mistral AI | provider_api | ✅ | `MISTRAL_API_KEY` | ~1 RPS, 500K TPM |
+| Z AI (Zhipu AI) | provider_api | ❌ | `Z_AI_API_KEY` | Requires opt-in |
+| Cloudflare Workers AI | inference_provider | ✅ | `CLOUDFLARE_API_TOKEN` | 10K neurons/day, 60+ models |
+| Gonka Broker | inference_provider | ❌ | `GONKA_API_KEY` | Phone verification required |
+| Groq | inference_provider | ✅ | `GROQ_API_KEY` | 30 RPM, LPU inference |
+| Kilo Code | inference_provider | ✅ | None | No key required, 200 req/hr |
+| LLM7.io | inference_provider | ✅ | `LLM7_API_KEY` | 60 RPM, anonymous tier |
+| ModelScope | inference_provider | ❌ | `MODELSCOPE_API_KEY` | Real-name verification, mainland China |
+| NVIDIA NIM | inference_provider | ✅ | `NVIDIA_API_KEY` | 40 RPM, 100+ models |
+| OpenRouter | inference_provider | ✅ | `OPENROUTER_API_KEY` | 17 free models, 20 RPM |
+| OVHcloud | inference_provider | ✅ | None | Anonymous, 2 RPM/IP/model, EU-hosted |
+| SiliconFlow | inference_provider | ❌ | `SILICONFLOW_API_KEY` | Identity verification, mainland China |
+
+Providers marked ❌ are disabled by default — they require phone verification,
+real-name verification, or mainland-China documentation. Operator must opt in
+via `config.json`.
+
+**Route selection within tier 2:**
+1. Filter by circuit breaker availability (skip open circuits)
+2. Filter by client cost budget remaining (skip if $0 remaining)
+3. Select by provider/model order (deterministic, sorted by provider then model ID)
+4. Fall through to tier 3 (paid) if all tier-2 circuits are open or budget exhausted
+
+**Config (`config.json` free_catalog section):**
+```json
+{
+  "free_catalog": {
+    "enabled": true,
+    "providers": {
+      "openrouter": { "enabled": true, "api_key_env": "OPENROUTER_API_KEY" },
+      "groq": { "enabled": true, "api_key_env": "GROQ_API_KEY" },
+      "ovhcloud": { "enabled": true, "api_key_env": null },
+      "z-ai": { "enabled": false, "api_key_env": "Z_AI_API_KEY" }
+    }
+  }
+}
+```
+
+**Paid vendor filtering:** Models matching paid vendor patterns
+(`claude-*`, `gpt-5.*`, `gemini-*`, `grok-*`, `glm-5.*`, `minimax-*`) are
+filtered from free-tier routes even if a provider advertises them — mirroring
+the `is_paid_vendor_model` concept from the litellm-free-models investigation.
+
 ---
 
 ## Configuration (config.json)
@@ -725,13 +790,14 @@ Config precedence: explicit argument → `config.json` → built-in default.
 
 | Check | Result |
 |-------|--------|
-| Test suite (`pytest tests/ -q`) | **548 passed, 0 failed, 82% coverage** |
+| Test suite (`pytest tests/ -q`) | **571 passed, 0 failed, 82% coverage** |
 | Gateway tests (`tests/test_gateway.py`) | **23 passed** (auth, circuit breaker, cache, billing, router, integration) |
+| Free catalog tests (`tests/test_free_catalog.py`) | **23 passed, 1 skipped** (catalog loading, routes, rate limits, paid vendor filter) |
 | verify-install.py | **18 PASS, 0 FAIL, 2 SKIP** |
 | Harvester persistence test | **PASSED** (save → reload → state restored) |
 | Vendored import test | **PASSED** (imports from `~/.owl-agent/`) |
 
-**Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545) + gateway/ (~2,000 lines)
+**Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545) + gateway/ (~3,400 lines including free_catalog/)
 **Uncovered lines**: 418 (18%)
 
 ---
@@ -783,6 +849,28 @@ Config precedence: explicit argument → `config.json` → built-in default.
 | brainstorming | obra/superpowers | PLAN | Structured ideation for gateway architecture |
 | writing-plans | obra/superpowers | PLAN | Detailed implementation plans with checkpoints |
 | systematic-debugging | obra/superpowers | BUILD/VERIFY | Hypothesis-driven debug loop for gateway issues |
+| deep-analysis | — | PLAN | Rate limit patterns, cost estimates, fallback ordering analysis |
+| deep-dive | — | PLAN/VERIFY | Provider-specific quirks (auth headers, streaming, error formats) |
+
+### Free Catalog Research (awesome-free-llm-apis)
+
+| Provider | Category | Models | Rate Limit | Enabled Default |
+|----------|----------|--------|------------|-----------------|
+| Aion Labs | provider_api | 4 | 15 RPM, 20K TPD | ✅ |
+| Cohere | provider_api | 11 | 1,000 calls/mo, 20 RPM | ✅ |
+| Google Gemini | provider_api | 8 | No published limits | ✅ |
+| Mistral AI | provider_api | 7 | ~1 RPS, 500K TPM | ✅ |
+| Z AI (Zhipu AI) | provider_api | 3 | 1 concurrent request | ❌ |
+| Cloudflare Workers AI | inference_provider | 7 named + 55 more | 10K neurons/day shared | ✅ |
+| Gonka Broker | inference_provider | 4 | ~1M tokens/month shared | ❌ |
+| Groq | inference_provider | 3 | 30 RPM, 1,000 RPD | ✅ |
+| Kilo Code | inference_provider | 10 | 200 req/hr | ✅ |
+| LLM7.io | inference_provider | 4 | 60 RPM, 250 req/hr | ✅ |
+| ModelScope | inference_provider | 2 named + more | 2,000 RPD total | ❌ |
+| NVIDIA NIM | inference_provider | 3 named + 92 more | 40 RPM, 10,000 RPD | ✅ |
+| OpenRouter | inference_provider | 11 free models | 20 RPM, 50 RPD | ✅ |
+| OVHcloud AI Endpoints | inference_provider | 9 | 2 RPM anonymous/IP | ✅ |
+| SiliconFlow | inference_provider | 2 | Identity verification | ❌ |
 
 ### Conceptual Skills (14 stubs in `skills/`) — see next section.
 
@@ -914,6 +1002,7 @@ Combines:
 | https://github.com/DietrichGebert/ponytail | ponytail skill |
 | https://github.com/andre-lmarinho/grillwith-tail | grill-with-tail skill |
 | https://github.com/okht/grill-powers | grill-powers skill |
+| https://github.com/marktantongco/awesome-free-llm-apis | Free LLM APIs catalog — 15 providers, 100+ free models, vendored as tier-2 free cloud routing |
 | https://github.com/hazikkhatri/superpowers | writing-plans, executing-plans, etc. |
 | https://github.com/lexiforest/curl_cffi | curl_cffi — browser TLS/JA3/JA4/HTTP2 fingerprint impersonation (stealth mode) |
 | https://brightdata.com/blog/web-data/web-scraping-with-curl-cffi | curl_cffi web scraping guide (2026) |

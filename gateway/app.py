@@ -85,6 +85,15 @@ async def startup() -> None:
     global audit
     from audit import AuditLogger
     audit = AuditLogger()
+
+    # Wire free catalog routes (tier 2) into the router
+    try:
+        from free_catalog.router_integration import wire_catalog_routes
+        added = wire_catalog_routes(router)
+        logger.info(f"Free catalog routes wired: {added}")
+    except Exception as exc:  # noqa: BLE001 — catalog is optional, gateway works without it
+        logger.warning(f"Free catalog not loaded: {exc}")
+
     logger.info("Gateway started — governed token plane v1.0.0")
     logger.info(f"Cache enabled: {cache.enabled}")
     logger.info(f"Kill switch: {billing.kill_switch}")
