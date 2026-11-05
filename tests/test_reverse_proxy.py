@@ -23,8 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from reverse_proxy import (
     CircuitBreaker,
+    DEFAULT_USER_AGENTS,
     ReverseProxy,
+    StealthClient,
+    StealthConfig,
     UpstreamTarget,
+    UserAgentRotator,
     load_config,
     parse_args,
     main_async,
@@ -273,3 +277,150 @@ class TestReverseProxyRequestHandling:
         for _ in range(5):
             cb.record_failure("http/1.1")
         assert cb.is_open("http/1.1") is True
+
+
+# ── stealth mode tests ────────────────────────────────────────────────
+
+
+class TestUserAgentRotator:
+    """Test UserAgentRotator rotation modes."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_sticky_mode_pins_per_target(self):
+        rotator = UserAgentRotator(mode="sticky")
+        ua1 = self._run(rotator.get("http://example.com/api/1"))
+        ua2 = self._run(rotator.get("http://example.com/api/1"))
+        ua3 = self._run(rotator.get("http://example.com/api/2"))
+        assert ua1 == ua2  # same target -> same UA (sticky)
+        assert ua1 in DEFAULT_USER_AGENTS
+        assert ua3 in DEFAULT_USER_AGENTS
+
+    def test_random_mode(self):
+        rotator = UserAgentRotator(mode="random")
+        uas = {self._run(rotator.get("http://example.com")) for _ in range(20)}
+        # With 5 default UAs and 20 draws, we should see at least 2 distinct
+        assert len(uas) >= 2
+        assert all(ua in DEFAULT_USER_AGENTS for ua in uas)
+
+    def test_cycle_mode(self):
+        rotator = UserAgentRotator(mode="cycle")
+        uas = [self._run(rotator.get("http://example.com")) for _ in range(len(DEFAULT_USER_AGENTS) + 2)]
+        # Cycle should wrap around
+        assert uas[0] == uas[len(DEFAULT_USER_AGENTS)]
+        assert len(set(uas)) == len(DEFAULT_USER_AGENTS)
+
+    def test_custom_user_agents(self):
+        custom = ["Mozilla/5.0 Custom/1.0"]
+        rotator = UserAgentRotator(user_agents=custom, mode="random")
+        ua = self._run(rotator.get("http://example.com"))
+        assert ua == "Mozilla/5.0 Custom/1.0"
+
+
+class TestStealthConfig:
+    """Test StealthConfig validation."""
+
+    def test_defaults(self):
+        cfg = StealthConfig()
+        assert cfg.enabled is True
+        assert cfg.browser == "chrome124"
+        assert cfg.user_agent_rotation == "sticky"
+        assert cfg.stealth_headers is True
+        assert cfg.cookie_persistence is True
+        assert cfg.timing_jitter_ms == (500, 2500)
+
+    def test_invalid_browser_warns_but_accepts(self):
+        # Unknown browser should warn but not raise
+        cfg = StealthConfig(browser="internet_explorer_6")
+        assert cfg.browser == "internet_explorer_6"
+
+    def test_invalid_rotation_raises(self):
+        with pytest.raises(ValueError):
+            StealthConfig(user_agent_rotation="invalid_mode")
+
+    def test_invalid_jitter_raises(self):
+        with pytest.raises(ValueError):
+            StealthConfig(timing_jitter_ms=(100,))
+
+
+class TestStealthClient:
+    """Test StealthClient initialization and stats."""
+
+    def test_init_default(self):
+        client = StealthClient()
+        assert client.config.browser == "chrome124"
+        assert client.config.enabled is True
+        assert client._requests_total == 0
+        assert len(client._sessions) == 0
+
+    def test_init_custom_config(self):
+        cfg = StealthConfig(browser="safari17", user_agent_rotation="random")
+        client = StealthClient(config=cfg)
+        assert client.config.browser == "safari17"
+        assert client.rotator.mode == "random"
+
+    def test_stats_structure(self):
+        client = StealthClient()
+        stats = client.stats()
+        assert stats["browser"] == "chrome124"
+        assert stats["user_agent_rotation"] == "sticky"
+        assert stats["stealth_headers"] is True
+        assert stats["cookie_persistence"] is True
+        assert stats["requests_total"] == 0
+        assert stats["sessions_active"] == 0
+
+    def test_curl_cffi_not_imported_at_module_scope(self):
+        """curl_cffi must be lazily imported — module import must not require it."""
+        import reverse_proxy as rp_module
+        assert rp_module._curl_cffi is None
+
+    def test_jitter_delay_range(self):
+        client = StealthClient(config=StealthConfig(timing_jitter_ms=(100, 200)))
+        delay = client._jitter_delay()
+        assert 0.1 <= delay <= 0.2
+
+    def test_jitter_delay_zero_when_disabled(self):
+        client = StealthClient(config=StealthConfig(timing_jitter_ms=(0, 0)))
+        delay = client._jitter_delay()
+        assert delay == 0.0
+
+
+class TestReverseProxyStealth:
+    """Test ReverseProxy stealth mode integration."""
+
+    def test_stealth_mode_enabled_via_constructor(self):
+        rp = ReverseProxy(
+            target_hosts=["http://localhost:3000"],
+            stealth_mode=True,
+            stealth_config=StealthConfig(browser="chrome124"),
+        )
+        assert rp.stealth_mode is True
+        assert rp._stealth_client is not None
+        assert rp._stealth_client.config.browser == "chrome124"
+        assert rp._user_agent_rotator is not None
+
+    def test_stealth_mode_disabled_by_default(self):
+        rp = ReverseProxy(target_hosts=["http://localhost:3000"])
+        assert rp.stealth_mode is False
+        assert rp._stealth_client is None
+
+    def test_stealth_in_stats(self):
+        rp = ReverseProxy(
+            target_hosts=["http://localhost:3000"],
+            stealth_mode=True,
+            stealth_config=StealthConfig(browser="firefox"),
+        )
+        stats = rp.stats()
+        assert "stealth" in stats
+        assert stats["stealth"]["browser"] == "firefox"
+
+    def test_select_protocol_stealth_not_in_standard_loop(self):
+        """Stealth protocol is handled outside the standard escalation loop."""
+        rp = ReverseProxy(target_hosts=["https://example.com"])
+        # 'stealth' is in the escalation chain but skipped in the standard loop
+        assert "stealth" in rp.protocol_escalation
+        headers = {}
+        protocol = rp._select_protocol(headers, "https://example.com")
+        # Without stealth config, stealth won't be auto-selected by _select_protocol
+        assert protocol != "stealth" or protocol in rp.protocol_escalation

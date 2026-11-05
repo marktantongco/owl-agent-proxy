@@ -20,8 +20,16 @@ The router selects the protocol based on:
   3. Adaptive: if http/1.1 fails with 429/403, escalate to next protocol
   4. Circuit breaker: after N consecutive failures on a protocol, skip it
 
+STEALTH MODE (v2.1):
+  The "stealth" protocol uses curl_cffi (curl-impersonate) to impersonate
+  real-browser TLS/JA3/JA4/HTTP2 fingerprints, bypassing anti-bot systems
+  (Cloudflare, Akamai, DataDome, PerimeterX) that fingerprint non-browser
+  TLS stacks. Stealth mode also injects browser-consistent headers
+  (Sec-CH-UA, Sec-Fetch-*, Accept-Language), rotates user agents, persists
+  cookies, and applies timing jitter.
+
 Optimizations:
-  - Lazy imports (aiohttp only on first request)
+  - Lazy imports (aiohttp, curl_cffi only on first request)
   - Connection pooling with keep-alive
   - Pre-warmed upstream connections
   - Per-protocol client cache (httpx per proxy URL)
@@ -29,10 +37,11 @@ Optimizations:
   - Domain rate limiting via ResilientClient limiter
 
 Run:
-    python reverse_proxy.py               # serve on :8080, forward to localhost:3000
-    python reverse_proxy.py --port 9090   # custom listen port
+    python reverse_proxy.py                           # serve on :8080, forward to localhost:3000
+    python reverse_proxy.py --port 9090               # custom listen port
     python reverse_proxy.py --target https://api.example.com  # custom upstream target
     python reverse_proxy.py --targets https://a.example.com,https://b.example.com  # load balance
+    python reverse_proxy.py --stealth-browser chrome124  # stealth mode with Chrome 124 impersonation
 
 Config (config.json):
     {
@@ -46,7 +55,16 @@ Config (config.json):
             "max_retries": 3,
             "protocol_escalation": ["http/1.1", "http/2", "ja3", "websocket", "browser", "stealth"],
             "circuit_breaker_threshold": 5,
-            "health_check_interval": 30
+            "health_check_interval": 30,
+            "auto_load_proxies": true,
+            "stealth": {
+                "enabled": true,
+                "browser": "chrome124",
+                "user_agent_rotation": "sticky",
+                "stealth_headers": true,
+                "cookie_persistence": true,
+                "timing_jitter_ms": [500, 2500]
+            }
         }
     }
 """
@@ -62,14 +80,17 @@ import random
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 # ── lazy imports ──────────────────────────────────────────────────────
-# aiohttp is imported lazily to keep cold import fast for --help and stats.
+# aiohttp and curl_cffi are imported lazily to keep cold import fast
+# for --help, stats reads, config parsing, or API-surface checks.
 _aiohttp: Any = None
 _web: Any = None
+_curl_cffi: Any = None
 
 
 def _require_aiohttp() -> Any:
@@ -86,6 +107,14 @@ def _require_web() -> Any:
         from aiohttp import web
         _web = web
     return _web
+
+
+def _require_curl_cffi() -> Any:
+    global _curl_cffi
+    if _curl_cffi is None:
+        from curl_cffi.requests import AsyncSession
+        _curl_cffi = AsyncSession
+    return _curl_cffi
 
 
 # Ensure the package directory is importable
@@ -121,6 +150,36 @@ HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
     "proxy-authorization", "te", "trailers", "transfer-encoding",
     "upgrade",
 })
+
+# Real browser user agents for rotation (Chrome, Safari, Firefox, Edge)
+DEFAULT_USER_AGENTS: List[str] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+]
+
+# Browser impersonation presets supported by curl_cffi (curl-impersonate)
+STEALTH_BROWSER_PROFILES: List[str] = [
+    "chrome", "chrome120", "chrome124", "safari", "safari17",
+    "edge", "edge99", "firefox",
+]
+
+# Stealth headers injected for browser-consistent fingerprinting
+STEALTH_HEADERS_TEMPLATE: Dict[str, str] = {
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "cache-control": "max-age=0",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
+}
 
 
 class CircuitBreaker:
@@ -191,6 +250,242 @@ class UpstreamTarget:
         return self._total_errors / self._total_requests
 
 
+# ── stealth mode components ───────────────────────────────────────────
+
+
+class UserAgentRotator:
+    """Rotates through real browser user-agent strings.
+
+    Modes:
+      - "random": pick a random user agent on every request
+      - "sticky": pin one user agent per (target_url) for session consistency
+      - "cycle": round-robin through the list
+    """
+
+    def __init__(
+        self,
+        user_agents: Optional[List[str]] = None,
+        mode: str = "sticky",
+    ) -> None:
+        self.user_agents: List[str] = user_agents or list(DEFAULT_USER_AGENTS)
+        self.mode = mode
+        self._sticky: Dict[str, str] = {}
+        self._cycle_index = 0
+        self._lock = asyncio.Lock()
+
+    async def get(self, target_url: str) -> str:
+        async with self._lock:
+            if self.mode == "sticky":
+                if target_url not in self._sticky:
+                    self._sticky[target_url] = random.choice(self.user_agents)
+                return self._sticky[target_url]
+            if self.mode == "random":
+                return random.choice(self.user_agents)
+            # cycle
+            ua = self.user_agents[self._cycle_index % len(self.user_agents)]
+            self._cycle_index += 1
+            return ua
+
+
+@dataclass
+class StealthConfig:
+    """Configuration for stealth mode (browser TLS fingerprint impersonation)."""
+
+    enabled: bool = True
+    browser: str = "chrome124"
+    user_agent_rotation: str = "sticky"  # "sticky" | "random" | "cycle"
+    stealth_headers: bool = True
+    cookie_persistence: bool = True
+    timing_jitter_ms: Tuple[int, int] = (500, 2500)
+    proxy_url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.browser not in STEALTH_BROWSER_PROFILES:
+            logger.warning(
+                f"Stealth browser '{self.browser}' not in known profiles "
+                f"{STEALTH_BROWSER_PROFILES}; curl_cffi may reject it."
+            )
+        if self.user_agent_rotation not in ("sticky", "random", "cycle"):
+            raise ValueError(
+                f"user_agent_rotation must be 'sticky', 'random', or 'cycle', "
+                f"got {self.user_agent_rotation!r}"
+            )
+        if len(self.timing_jitter_ms) != 2:
+            raise ValueError("timing_jitter_ms must be a (min, max) tuple")
+
+
+class StealthClient:
+    """HTTP client using curl_cffi for browser TLS/JA3/JA4 fingerprint impersonation.
+
+    Stealth mode impersonates real-browser TLS stacks so anti-bot systems
+    (Cloudflare, Akamai, DataDome, PerimeterX) see browser-grade JA3/JA4
+    fingerprints instead of Python/OpenSSL signatures.
+
+    curl_cffi wraps curl-impersonate, which reproduces the exact TLS ClientHello
+    (cipher suite order, extensions, ALPN, GREASE positions), HTTP/2 SETTINGS
+    frame ordering, and browser-consistent headers of a target browser profile.
+    """
+
+    def __init__(
+        self,
+        config: Optional[StealthConfig] = None,
+        user_agent_rotator: Optional[UserAgentRotator] = None,
+    ) -> None:
+        self.config = config or StealthConfig()
+        self.rotator = user_agent_rotator or UserAgentRotator(
+            mode=self.config.user_agent_rotation
+        )
+        self._sessions: Dict[str, Any] = {}  # browser -> AsyncSession
+        self._cookies: Dict[str, Any] = {}  # simple cookie persistence by domain
+        self._lock = asyncio.Lock()
+        self._requests_total = 0
+        self._requests_ok = 0
+        self._requests_error = 0
+
+    async def _session(self, browser: str) -> Any:
+        """Get or create a curl_cffi AsyncSession for the given browser profile."""
+        async with self._lock:
+            if browser in self._sessions:
+                return self._sessions[browser]
+        AsyncSession = _require_curl_cffi()
+        session = AsyncSession(
+            impersonate=browser,
+            headers={},
+        )
+        async with self._lock:
+            self._sessions[browser] = session
+        return session
+
+    async def close(self) -> None:
+        """Close all curl_cffi sessions."""
+        async with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            try:
+                closer = getattr(session, "aclose", None) or getattr(
+                    session, "close", None
+                )
+                if closer:
+                    result = closer()
+                    if asyncio.iscoroutine(result):
+                        await result
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"stealth session close failed: {exc}")
+
+    def _stealth_headers(self, user_agent: str) -> Dict[str, str]:
+        """Build browser-consistent stealth headers."""
+        if not self.config.stealth_headers:
+            return {}
+        headers = dict(STEALTH_HEADERS_TEMPLATE)
+        headers["user-agent"] = user_agent
+        # Derive sec-ch-ua brand from user agent when possible
+        ua_lower = user_agent.lower()
+        if "chrome" in ua_lower and "edg" not in ua_lower:
+            headers["sec-ch-ua"] = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
+            headers["sec-ch-ua-platform"] = '"Windows"'
+        elif "firefox" in ua_lower:
+            headers.pop("sec-ch-ua", None)
+            headers.pop("sec-ch-ua-mobile", None)
+            headers.pop("sec-ch-ua-platform", None)
+        elif "safari" in ua_lower and "chrome" not in ua_lower:
+            headers["sec-ch-ua"] = '"Not-A.Brand";v="99", "Safari";v="17.4"'
+            headers["sec-ch-ua-platform"] = '"macOS"'
+        return headers
+
+    def _apply_timing_jitter(self) -> None:
+        """Apply random timing jitter between requests (stealth behavior)."""
+        if self.config.timing_jitter_ms:
+            min_ms, max_ms = self.config.timing_jitter_ms
+            delay = random.uniform(min_ms, max_ms) / 1000.0
+            # Note: jitter is applied by callers via asyncio.sleep to avoid
+            # blocking the event loop unexpectedly. This helper returns the
+            # computed delay so callers can await it.
+            return delay
+        return 0.0
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Any] = None,
+        data: Any = None,
+        proxy_url: Optional[str] = None,
+    ) -> Any:
+        """Make an HTTP request with stealth browser impersonation.
+
+        Returns a response-like object with .status, .content, .headers.
+        """
+        proxy_url = proxy_url or self.config.proxy_url
+        browser = self.config.browser
+
+        # Select user agent
+        user_agent = await self.rotator.get(url)
+        req_headers = self._stealth_headers(user_agent)
+        if headers:
+            req_headers.update(headers)
+
+        # Apply timing jitter (non-blocking sleep handled by caller via _jitter_delay)
+        jitter_delay = self._apply_timing_jitter()
+
+        session = await self._session(browser)
+
+        self._requests_total += 1
+        try:
+            resp = await session.request(
+                method=method,
+                url=url,
+                params=params,
+                headers=req_headers,
+                data=data,
+                proxy=proxy_url,
+            )
+
+            # Persist cookies (simple domain-based jar)
+            if self.config.cookie_persistence:
+                self._persist_cookies(url, getattr(resp, "cookies", None) or {})
+
+            self._requests_ok += 1
+            return resp
+
+        except Exception as exc:  # noqa: BLE001
+            self._requests_error += 1
+            logger.error(f"stealth request failed {method} {url}: {exc}")
+            raise
+
+    def _persist_cookies(self, url: str, cookies: Any) -> None:
+        """Persist cookies by domain for session continuity."""
+        try:
+            from urllib.parse import urlparse as _up
+
+            domain = _up(url).netloc
+            if domain and cookies:
+                self._cookies[domain] = dict(cookies)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    def _jitter_delay(self) -> float:
+        """Return the configured jitter delay in seconds (for callers to await)."""
+        if self.config.timing_jitter_ms:
+            min_ms, max_ms = self.config.timing_jitter_ms
+            return random.uniform(min_ms, max_ms) / 1000.0
+        return 0.0
+
+    def stats(self) -> Dict[str, Any]:
+        return {
+            "browser": self.config.browser,
+            "user_agent_rotation": self.config.user_agent_rotation,
+            "stealth_headers": self.config.stealth_headers,
+            "cookie_persistence": self.config.cookie_persistence,
+            "requests_total": self._requests_total,
+            "requests_ok": self._requests_ok,
+            "requests_error": self._requests_error,
+            "sessions_active": len(self._sessions),
+        }
+
+
 class ReverseProxy:
     """HTTP ingress that forwards requests through ResilientClient egress.
 
@@ -206,6 +501,9 @@ class ReverseProxy:
       - Lazy imports for fast cold start
       - Health checks on upstream targets
       - Request/response transformation hooks
+      - STEALTH MODE (v2.1): curl_cffi browser TLS/JA3/JA4 fingerprint
+        impersonation, user-agent rotation, stealth headers, cookie persistence,
+        timing jitter
     """
 
     def __init__(
@@ -221,6 +519,8 @@ class ReverseProxy:
         protocol_escalation: Optional[List[str]] = None,
         circuit_breaker_threshold: int = CIRCUIT_BREAKER_THRESHOLD,
         health_check_interval: float = HEALTH_CHECK_INTERVAL,
+        stealth_mode: bool = False,
+        stealth_config: Optional[StealthConfig] = None,
     ):
         # Lazy import proxy_defense to keep cold import fast
         import proxy_defense as pd
@@ -256,6 +556,21 @@ class ReverseProxy:
 
         # Last health check time
         self._last_health_check: float = 0
+
+        # Stealth mode
+        self.stealth_mode = stealth_mode
+        self.stealth_config = stealth_config or StealthConfig(enabled=stealth_mode)
+        self._stealth_client: Optional[StealthClient] = None
+        self._user_agent_rotator: Optional[UserAgentRotator] = None
+
+        if self.stealth_mode:
+            self._user_agent_rotator = UserAgentRotator(
+                mode=self.stealth_config.user_agent_rotation
+            )
+            self._stealth_client = StealthClient(
+                config=self.stealth_config,
+                user_agent_rotator=self._user_agent_rotator,
+            )
 
     # ── upstream selection ──────────────────────────────────────────
 
@@ -343,11 +658,60 @@ class ReverseProxy:
 
     # ── request handling ────────────────────────────────────────────
 
+    async def _handle_stealth(
+        self,
+        method: str,
+        target_url: str,
+        forward_headers: Dict[str, str],
+    ) -> Any:
+        """Handle a request using stealth mode (curl_cffi browser impersonation)."""
+        if self._stealth_client is None:
+            raise RuntimeError("Stealth client not initialized")
+
+        # Apply timing jitter before the request
+        jitter = self._stealth_client._jitter_delay()
+        if jitter > 0:
+            await asyncio.sleep(jitter)
+
+        resp = await self._stealth_client.request(
+            method=method,
+            url=target_url,
+            headers=forward_headers,
+            proxy_url=self.stealth_config.proxy_url,
+        )
+        return resp
+
+    def _build_stealth_response(self, resp: Any) -> Any:
+        """Build an aiohttp response from a curl_cffi response."""
+        web = _require_web()
+        content = getattr(resp, "content", b"")
+        if isinstance(content, str):
+            content = content.encode()
+        headers = getattr(resp, "headers", {}) or {}
+        response = web.Response(
+            status=getattr(resp, "status", 200),
+            body=content,
+            content_type=headers.get("content-type"),
+        )
+        for key, value in headers.items():
+            if key.lower() not in HOP_BY_HOP_HEADERS:
+                response.headers[key] = value
+        return response
+
     async def start(self) -> None:
         """Initialize the client session and start the aiohttp server."""
         aiohttp = _require_aiohttp()
         self._session = aiohttp.ClientSession()
         await self.client.__aenter__()
+
+        # Initialize stealth client session if stealth mode is enabled
+        if self._stealth_client is not None:
+            # Force session creation lazily on first stealth request;
+            # curl_cffi AsyncSession is created on first use via _session().
+            logger.info(
+                f"Stealth mode enabled: browser={self.stealth_config.browser}, "
+                f"rotation={self.stealth_config.user_agent_rotation}"
+            )
 
         web = _require_web()
         app = web.Application(middlewares=[self._logging_middleware])
@@ -370,6 +734,8 @@ class ReverseProxy:
         if self._session:
             await self._session.close()
         await self.client.__aexit__(None, None, None)
+        if self._stealth_client is not None:
+            await self._stealth_client.close()
         logger.info("Reverse proxy stopped")
 
     @staticmethod
@@ -385,7 +751,12 @@ class ReverseProxy:
             )
 
     async def _handle_request(self, request: Any) -> Any:
-        """Proxy an incoming HTTP request through ResilientClient to the target."""
+        """Proxy an incoming HTTP request through ResilientClient to the target.
+
+        If stealth mode is active and the selected protocol is "stealth",
+        the request is routed through the curl_cffi StealthClient instead
+        of ResilientClient.
+        """
         self._requests_total += 1
 
         # Periodic health check
@@ -410,15 +781,38 @@ class ReverseProxy:
             if key.lower() not in HOP_BY_HOP_HEADERS:
                 forward_headers[key] = value
 
-        # Read body
+        # Read body (needed for POST/PUT etc.)
         body = await request.read()
 
         # Select protocol with escalation
         protocol = self._select_protocol(forward_headers, target_url)
         last_error: Optional[Exception] = None
 
-        # Try protocols in escalation order
+        # If stealth mode is selected and available, use the stealth client
+        if protocol == "stealth" and self._stealth_client is not None:
+            try:
+                resp = await self._handle_stealth(
+                    request.method, target_url, forward_headers
+                )
+                self._requests_ok += 1
+                target.mark_success()
+                self.circuit_breaker.record_success("stealth")
+                return self._build_stealth_response(resp)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                target.mark_failure()
+                self.circuit_breaker.record_failure("stealth")
+                self._requests_error += 1
+                logger.error(
+                    f"Stealth proxy error for {request.method} {target_url}: {last_error}"
+                )
+                return self._error_response(502, "Bad Gateway")
+
+        # Try protocols in escalation order (ResilientClient egress)
         for attempt_protocol in self.protocol_escalation:
+            if attempt_protocol == "stealth":
+                # Stealth handled above; skip in the standard loop
+                continue
             if self.circuit_breaker.is_open(attempt_protocol):
                 continue
 
@@ -486,7 +880,7 @@ class ReverseProxy:
 
     def stats(self) -> Dict[str, Any]:
         """Return reverse proxy statistics."""
-        return {
+        stats = {
             "listen_port": self.listen_port,
             "target_hosts": [t.url for t in self.target_hosts],
             "targets_healthy": [
@@ -501,6 +895,9 @@ class ReverseProxy:
                 for p in self.protocol_escalation
             },
         }
+        if self._stealth_client is not None:
+            stats["stealth"] = self._stealth_client.stats()
+        return stats
 
 
 def load_config() -> dict:
@@ -534,6 +931,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Comma-separated list of upstream targets for load balancing",
     )
+    parser.add_argument(
+        "--stealth-browser",
+        default=None,
+        choices=STEALTH_BROWSER_PROFILES,
+        help=f"Enable stealth mode with browser impersonation ({', '.join(STEALTH_BROWSER_PROFILES)})",
+    )
     return parser.parse_args()
 
 
@@ -557,6 +960,27 @@ async def main_async() -> None:
     # Build protocol escalation from config if provided
     protocol_escalation = rp_config.get("protocol_escalation")
 
+    # Stealth mode configuration
+    stealth_cfg_dict = rp_config.get("stealth", {})
+    stealth_browser = args.stealth_browser or stealth_cfg_dict.get("browser")
+    stealth_mode = bool(stealth_browser) or stealth_cfg_dict.get("enabled", False)
+
+    stealth_config: Optional[StealthConfig] = None
+    if stealth_mode:
+        stealth_config = StealthConfig(
+            enabled=True,
+            browser=stealth_browser or "chrome124",
+            user_agent_rotation=stealth_cfg_dict.get(
+                "user_agent_rotation", "sticky"
+            ),
+            stealth_headers=stealth_cfg_dict.get("stealth_headers", True),
+            cookie_persistence=stealth_cfg_dict.get("cookie_persistence", True),
+            timing_jitter_ms=tuple(
+                stealth_cfg_dict.get("timing_jitter_ms", [500, 2500])
+            ),
+            proxy_url=stealth_cfg_dict.get("proxy_url"),
+        )
+
     proxy = ReverseProxy(
         target_hosts=targets,
         listen_port=port,
@@ -572,13 +996,16 @@ async def main_async() -> None:
         health_check_interval=rp_config.get(
             "health_check_interval", HEALTH_CHECK_INTERVAL
         ),
+        stealth_mode=stealth_mode,
+        stealth_config=stealth_config,
     )
 
     try:
         await proxy.start()
         targets_str = ", ".join(targets)
+        stealth_str = f" [stealth: {stealth_config.browser}]" if stealth_config else ""
         print(
-            f"Reverse proxy running on http://0.0.0.0:{port} -> {targets_str}",
+            f"Reverse proxy running on http://0.0.0.0:{port} -> {targets_str}{stealth_str}",
             file=sys.stderr,
         )
         print("Press Ctrl+C to stop", file=sys.stderr)

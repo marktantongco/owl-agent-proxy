@@ -6,7 +6,7 @@ Subcommands:
     fetch <url> [--json] Fetch a URL through the proxy pool and print result
     harvest [--seconds N] Force one upstream harvest sweep
     mcp-selftest         Run MCP server initialize/tools/resources/ping selftest
-    serve [--port N] [--target HOST]  Run reverse proxy HTTP ingress
+    serve [--port N] [--target HOST] [--targets T1,T2] [--stealth-browser BROWSER]  Run reverse proxy HTTP ingress
     verify [--no-live]   Run the installation verification suite
 """
 from __future__ import annotations
@@ -115,6 +115,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         cmd += ["--target", args.target]
     if args.targets is not None:
         cmd += ["--targets", args.targets]
+    if args.stealth_browser is not None:
+        cmd += ["--stealth-browser", args.stealth_browser]
     result = subprocess.run(cmd)
     return result.returncode
 
@@ -154,6 +156,12 @@ def main() -> int:
     p_serve.add_argument("--port", type=int, default=None, help="Listen port")
     p_serve.add_argument("--target", default=None, help="Upstream target host")
     p_serve.add_argument("--targets", default=None, help="Comma-separated upstream targets for load balancing")
+    p_serve.add_argument(
+        "--stealth-browser",
+        default=None,
+        choices=["chrome", "chrome120", "chrome124", "safari", "safari17", "edge", "edge99", "firefox"],
+        help="Enable stealth mode with browser TLS fingerprint impersonation",
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_verify = sub.add_parser("verify", help="Run installation verification")
