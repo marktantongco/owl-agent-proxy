@@ -34,19 +34,29 @@
       "cache_ttl": 3600
     },
     "routing": {
-      "strategy": "local_first",
+      "strategy": "free_catalog_first",
       "tiers": [
         {
           "tier": 1,
-          "name": "local",
-          "provider": "ollama",
-          "model": "qwen2.5:14b",
-          "api_base": "http://127.0.0.1:11434",
-          "cost_per_1k_tokens": 0.0
+          "name": "free_catalog",
+          "provider": "multiple",
+          "source": "gateway/free_catalog/providers.json",
+          "models": "100+ free models from 15 providers",
+          "cost_per_1k_tokens": 0.0,
+          "note": "Populated dynamically from vendored catalog at startup"
         },
         {
           "tier": 2,
-          "name": "free_cloud",
+          "name": "paid_fallback",
+          "provider": "anthropic",
+          "model": "claude-3-5-haiku-20241022",
+          "api_base": "https://api.anthropic.com",
+          "api_key_env": "ANTHROPIC_API_KEY",
+          "cost_per_1k_tokens": 0.80
+        },
+        {
+          "tier": 2,
+          "name": "paid_fallback",
           "provider": "openai",
           "model": "gpt-4o-mini",
           "api_base": "https://api.openai.com/v1",
@@ -55,12 +65,12 @@
         },
         {
           "tier": 3,
-          "name": "paid_fallback",
-          "provider": "anthropic",
-          "model": "claude-3-5-haiku-20241022",
-          "api_base": "https://api.anthropic.com",
-          "api_key_env": "ANTHROPIC_API_KEY",
-          "cost_per_1k_tokens": 0.80
+          "name": "local",
+          "provider": "ollama",
+          "model": "qwen2.5:14b",
+          "api_base": "http://127.0.0.1:11434",
+          "cost_per_1k_tokens": 0.0,
+          "note": "Free local bulk engine, hardware cost only, last resort"
         }
       ]
     },

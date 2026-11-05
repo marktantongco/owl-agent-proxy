@@ -3,7 +3,7 @@ Free catalog loader.
 
 Loads the vendored awesome-free-llm-apis catalog from providers.json,
 validates its structure, and converts provider+model entries into
-gateway.router.ModelRoute objects for tier-2 (free cloud) routing.
+gateway.router.ModelRoute objects for tier-1 (free catalog) routing.
 
 All provider data is vendored locally — no runtime network dependency,
 suitable for bare-metal laptop deployment.
@@ -247,8 +247,8 @@ def load_routes(
     """
     Convert the free catalog into a list of gateway.router.ModelRoute objects.
 
-    Each model in the catalog becomes a separate ModelRoute with tier=2
-    (free cloud). Routes are sorted by provider then model ID for deterministic
+    Each model in the catalog becomes a separate ModelRoute with tier=1
+    (free catalog). Routes are sorted by provider then model ID for deterministic
     selection.
 
     Args:
@@ -281,7 +281,7 @@ def load_routes(
                 name=f"{provider.name}/{model_name}",
                 provider=provider.id,
                 model_id=model_id,
-                tier=2,
+                tier=1,
                 api_base=api_base,
                 api_key_env=provider.api_key_env,
                 cost_per_1k_tokens=cost_per_1k_tokens,

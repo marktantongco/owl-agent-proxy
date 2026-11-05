@@ -182,47 +182,42 @@ class TestBilling:
 
 
 class TestRouter:
-    """Test model routing logic."""
+    """Test model routing logic (free catalog → paid fallback → local)."""
 
-    def test_routes_local_first(self):
-        """Local models (tier 1) are preferred."""
+    def test_routes_paid_fallback_before_local(self):
+        """Without free catalog, paid fallback (tier 2) is preferred over local (tier 3)."""
         router = Router()
         decision = router.route(
             task_type="default",
             client_budget_tokens_remaining=100000,
             client_cost_remaining_usd=10.0,
-            circuit_breaker_available={"ollama": True, "openai": True, "anthropic": True},
+            circuit_breaker_available={
+                "anthropic": True,
+                "openai": True,
+                "ollama": True,
+            },
+        )
+        assert decision is not None
+        assert decision.provider in ("anthropic", "openai")
+        assert decision.tier == 2  # Paid fallback
+
+    def test_routes_to_local_when_paid_unavailable(self):
+        """Falls back to local Ollama (tier 3) when paid circuits are open."""
+        router = Router()
+        decision = router.route(
+            task_type="default",
+            client_budget_tokens_remaining=100000,
+            client_cost_remaining_usd=10.0,
+            circuit_breaker_available={
+                "anthropic": False,
+                "openai": False,
+                "ollama": True,
+            },
         )
         assert decision is not None
         assert decision.provider == "ollama"
-        assert decision.tier == 1
-        assert decision.is_local is True  # type: ignore[attr-defined]
-
-    def test_routes_to_free_cloud_when_local_unavailable(self):
-        """Falls back to free cloud when local circuit is open."""
-        router = Router()
-        decision = router.route(
-            task_type="default",
-            client_budget_tokens_remaining=100000,
-            client_cost_remaining_usd=10.0,
-            circuit_breaker_available={"ollama": False, "openai": True, "anthropic": True},
-        )
-        assert decision is not None
-        assert decision.provider == "openai"
-        assert decision.tier == 2
-
-    def test_routes_to_paid_when_others_unavailable(self):
-        """Falls back to paid when local and free are unavailable."""
-        router = Router()
-        decision = router.route(
-            task_type="default",
-            client_budget_tokens_remaining=100000,
-            client_cost_remaining_usd=10.0,
-            circuit_breaker_available={"ollama": False, "openai": False, "anthropic": True},
-        )
-        assert decision is not None
-        assert decision.provider == "anthropic"
         assert decision.tier == 3
+        assert decision.is_local is True
 
     def test_returns_none_when_all_unavailable(self):
         """Returns None when all providers are unavailable."""
@@ -231,21 +226,30 @@ class TestRouter:
             task_type="default",
             client_budget_tokens_remaining=100000,
             client_cost_remaining_usd=10.0,
-            circuit_breaker_available={"ollama": False, "openai": False, "anthropic": False},
+            circuit_breaker_available={
+                "anthropic": False,
+                "openai": False,
+                "ollama": False,
+            },
         )
         assert decision is None
 
-    def test_blocks_when_cost_budget_exhausted(self):
-        """Blocks non-local routes when client cost budget is 0."""
+    def test_blocks_paid_when_cost_budget_exhausted_but_local_still_works(self):
+        """Paid routes skipped when cost budget is 0, but local (free) still works."""
         router = Router()
         decision = router.route(
             task_type="default",
             client_budget_tokens_remaining=100000,
-            client_cost_remaining_usd=0.0,  # No budget for cloud
-            circuit_breaker_available={"ollama": False, "openai": True, "anthropic": True},
+            client_cost_remaining_usd=0.0,  # No budget for paid
+            circuit_breaker_available={
+                "anthropic": True,
+                "openai": True,
+                "ollama": True,
+            },
         )
-        # Local is unavailable (circuit open), cloud has no budget → None
-        assert decision is None
+        assert decision is not None
+        assert decision.provider == "ollama"
+        assert decision.tier == 3  # Local is free, bypasses cost budget
 
     def test_add_custom_route(self):
         """Custom routes can be added for task types."""
@@ -268,6 +272,7 @@ class TestRouter:
         assert decision is not None
         assert decision.provider == "custom"
         assert decision.model_id == "custom:latest"
+        assert decision.tier == 1
 
     def test_stats_structure(self):
         """Router stats has expected structure."""
@@ -284,20 +289,24 @@ class TestRouter:
 class TestBudgetIntegration:
     """Test billing + router integration."""
 
-    def test_budget_blocks_router_selection(self):
-        """When client budget is exhausted, router returns None for cloud routes."""
-        billing = Billing(default_token_limit=10, default_cost_limit_usd=0.0)
+    def test_local_route_bypasses_cost_budget(self):
+        """Local route (tier 3, free) is selectable even when cost budget is 0."""
+        billing = Billing(default_token_limit=100000, default_cost_limit_usd=0.0)
         router = Router()
 
-        # Client has no budget → local only (but local circuit closed)
         decision = router.route(
             task_type="default",
             client_budget_tokens_remaining=billing.get_budget("c1").token_remaining,
             client_cost_remaining_usd=billing.get_budget("c1").cost_remaining_usd,
-            circuit_breaker_available={"ollama": True, "openai": False, "anthropic": False},
+            circuit_breaker_available={
+                "anthropic": False,
+                "openai": False,
+                "ollama": True,
+            },
         )
         assert decision is not None
-        assert decision.provider == "ollama"  # Local still works
+        assert decision.provider == "ollama"
+        assert decision.tier == 3  # Local bypasses cost budget
 
 
 # ── App import test ──

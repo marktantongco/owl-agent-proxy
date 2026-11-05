@@ -584,19 +584,19 @@ python reverse_proxy.py --stealth-browser chrome124
 
 ## Governed Token Plane (v1.0.0)
 
-**Per Marky's recommendation: do NOT chase "unlimited free tokens" via reverse proxy.**
+**Per Marky's recommendation: do NOT chase "unlimited free tokens" via reverse proxy.**  
 Instead build a governed token plane: OpenCode v2 → gateway token → Nginx/Caddy edge →
-9Router/LiteLLM gateway (`127.0.0.1:20128`) → local models (Ollama/vLLM) + free tiers +
-paid fallback + Redis cache + per-user budgets + provider key isolation.
+gateway (`127.0.0.1:20128`) → free catalog (15 providers, 100+ models) → paid fallback →
+local Ollama/vLLM + Redis cache + per-user budgets + provider key isolation.
 
 ### Architecture
 
 ```
 Client -> gateway token -> Nginx/Caddy edge (TLS + rate limit)
     -> gateway app.py (auth + route + cache + bill + audit)
-    -> local Ollama/vLLM (tier 1, free)
-    -> free-tier cloud (tier 2, burst)
-    -> paid fallback (tier 3)
+    -> Tier 1: Free catalog — 15 providers, 100+ free models (burst)
+    -> Tier 2: Paid fallback — Anthropic/OpenAI paid (budget-gated)
+    -> Tier 3: Local Ollama/vLLM (free, hardware cost only, last resort)
 ```
 
 Clients present only a gateway token. Provider API keys live exclusively in the gateway
@@ -608,15 +608,19 @@ environment/secrets manager — never sent to clients, never logged.
 |------|---------|
 | `gateway/app.py` | FastAPI gateway — auth, routing, caching, billing, circuit breaker, audit logging |
 | `gateway/auth.py` | Bearer token validation — clients authenticate with gateway token, not provider keys |
-| `gateway/router.py` | Model routing: local → free cloud → paid fallback, tiered selection |
+| `gateway/router.py` | Model routing: free catalog → paid fallback → local, tiered selection |
 | `gateway/cache.py` | Redis-backed response cache (exact match, TTL-based) |
 | `gateway/billing.py` | Per-client token/cost budgets with kill switch |
 | `gateway/circuit_breaker.py` | Per-provider circuit breaker with fallback chain |
 | `gateway/audit.py` | Redacted audit logging — no provider keys or secrets in logs |
+| `gateway/free_catalog/providers.json` | Vendored catalog from awesome-free-llm-apis — 15 providers, 100+ models |
+| `gateway/free_catalog/loader.py` | Catalog loader — converts provider entries to ModelRoute objects |
+| `gateway/free_catalog/router_integration.py` | Wires catalog routes into Router as tier-1 entries |
 | `nginx.conf` | Nginx edge proxy: TLS termination, rate limiting, header forwarding |
 | `Caddyfile` | Caddy edge proxy (alternative to Nginx) |
 | `docker-compose.yml` | Local dev stack: gateway + Redis + Ollama |
 | `tests/test_gateway.py` | 23 gateway unit tests |
+| `tests/test_free_catalog.py` | 23 free catalog unit tests |
 
 ### Key Design Principles
 
@@ -624,12 +628,13 @@ environment/secrets manager — never sent to clients, never logged.
    from the gateway environment only. Clients never receive them. Audit logs redact all
    sensitive fields.
 
-2. **Local-first routing** — Ollama/vLLM local models are preferred (tier 1, hardware cost
-   only). Free-tier cloud is burst capacity. Paid fallback is used only when necessary and
-   budget allows.
+2. **Free catalog first** — Tier 1 routes requests through 15 free LLM providers from the
+   vendored awesome-free-llm-apis catalog (burst capacity). Paid fallback (tier 2) is used
+   only when necessary and budget allows. Local Ollama/vLLM (tier 3) is a free hardware-cost
+   fallback used as last resort regardless of budget.
 
 3. **Budget enforcement** — Per-client token and cost limits with 24-hour windows. Exceeded
-   budgets block further requests until reset.
+   budgets block paid route requests until reset. Local routes bypass cost budget (free).
 
 4. **Circuit breaker** — Per-provider failure tracking with configurable threshold and
    cooldown. Failed providers are skipped in favor of the next in the fallback chain.
@@ -655,11 +660,12 @@ environment/secrets manager — never sent to clients, never logged.
       "cache_ttl": 3600
     },
     "routing": {
-      "strategy": "local_first",
+      "strategy": "free_catalog_first",
       "tiers": [
-        { "tier": 1, "name": "local", "provider": "ollama", "model": "qwen2.5:14b", "cost_per_1k_tokens": 0.0 },
-        { "tier": 2, "name": "free_cloud", "provider": "openai", "model": "gpt-4o-mini", "cost_per_1k_tokens": 0.15 },
-        { "tier": 3, "name": "paid_fallback", "provider": "anthropic", "model": "claude-3-5-haiku-20241022", "cost_per_1k_tokens": 0.80 }
+        { "tier": 1, "name": "free_catalog", "provider": "multiple", "source": "gateway/free_catalog/providers.json", "models": "100+ free models from 15 providers", "cost_per_1k_tokens": 0.0 },
+        { "tier": 2, "name": "paid_fallback", "provider": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY", "cost_per_1k_tokens": 0.80 },
+        { "tier": 2, "name": "paid_fallback", "provider": "openai", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY", "cost_per_1k_tokens": 0.15 },
+        { "tier": 3, "name": "local", "provider": "ollama", "model": "qwen2.5:14b", "cost_per_1k_tokens": 0.0 }
       ]
     },
     "circuit_breaker": { "threshold": 5, "cooldown_seconds": 60 },
@@ -697,7 +703,7 @@ curl -X POST http://127.0.0.1:20128/v1/chat/completions \
 
 ### Free Catalog Integration (`gateway/free_catalog/`)
 
-The gateway's tier-2 (free cloud) routing is populated from
+The gateway's tier-1 (free catalog) routing is populated from
 `marktantongco/awesome-free-llm-apis` — a curated catalog of 15 free LLM
 providers with 100+ free models. The catalog is vendored locally
 (`gateway/free_catalog/providers.json`) so the gateway works offline on
@@ -707,7 +713,7 @@ bare-metal laptops with no runtime network dependency.
 |------|---------|
 | `gateway/free_catalog/providers.json` | Vendored catalog — 15 providers, base URLs, rate limits, models |
 | `gateway/free_catalog/loader.py` | Loads and validates catalog, converts to `ModelRoute` objects |
-| `gateway/free_catalog/router_integration.py` | Wires catalog routes into `Router` as tier-2 entries |
+| `gateway/free_catalog/router_integration.py` | Wires catalog routes into `Router` as tier-1 entries |
 | `tests/test_free_catalog.py` | 23 unit tests — catalog loading, route conversion, rate limit parsing, paid vendor filtering, router integration |
 
 **15 providers (11 enabled by default, 4 require opt-in):**
@@ -734,11 +740,12 @@ Providers marked ❌ are disabled by default — they require phone verification
 real-name verification, or mainland-China documentation. Operator must opt in
 via `config.json`.
 
-**Route selection within tier 2:**
+**Route selection within tier 1 (free catalog):**
 1. Filter by circuit breaker availability (skip open circuits)
-2. Filter by client cost budget remaining (skip if $0 remaining)
+2. Filter by client cost budget remaining (skip if $0 remaining — catalog is free)
 3. Select by provider/model order (deterministic, sorted by provider then model ID)
-4. Fall through to tier 3 (paid) if all tier-2 circuits are open or budget exhausted
+4. Fall through to tier 2 (paid fallback) if all tier-1 circuits are open or budget exhausted
+5. Fall through to tier 3 (local Ollama/vLLM) if paid is also unavailable
 
 **Config (`config.json` free_catalog section):**
 ```json
@@ -1002,7 +1009,7 @@ Combines:
 | https://github.com/DietrichGebert/ponytail | ponytail skill |
 | https://github.com/andre-lmarinho/grillwith-tail | grill-with-tail skill |
 | https://github.com/okht/grill-powers | grill-powers skill |
-| https://github.com/marktantongco/awesome-free-llm-apis | Free LLM APIs catalog — 15 providers, 100+ free models, vendored as tier-2 free cloud routing |
+| https://github.com/marktantongco/awesome-free-llm-apis | Free LLM APIs catalog — 15 providers, 100+ free models, vendored as tier-1 free catalog routing |
 | https://github.com/hazikkhatri/superpowers | writing-plans, executing-plans, etc. |
 | https://github.com/lexiforest/curl_cffi | curl_cffi — browser TLS/JA3/JA4/HTTP2 fingerprint impersonation (stealth mode) |
 | https://brightdata.com/blog/web-data/web-scraping-with-curl-cffi | curl_cffi web scraping guide (2026) |
