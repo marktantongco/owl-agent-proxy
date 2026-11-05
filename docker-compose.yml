@@ -1,0 +1,69 @@
+# OWL Agent Governed Token Plane — Local Development Stack
+#
+# Services:
+#   - gateway: FastAPI gateway (port 20128, bound to 127.0.0.1 only)
+#   - redis: Response cache + budget tracking
+#   - ollama: Local model server (optional, for free bulk inference)
+#
+# The gateway binds to 127.0.0.1 only — do not expose it directly.
+# Put Nginx or Caddy in front for TLS + auth at the edge.
+
+services:
+  gateway:
+    build: .
+    container_name: owl-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:20128:20128"
+    environment:
+      - OWL_GATEWAY_TOKEN=${OWL_GATEWAY_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OWL_CACHE_ENABLED=true
+      - OWL_DEFAULT_TOKEN_LIMIT=100000
+      - OWL_DEFAULT_COST_LIMIT_USD=10.0
+      - OWL_KILL_SWITCH=false
+    depends_on:
+      - redis
+    networks:
+      - owl-internal
+    # Gateway is NOT exposed to the public internet — only to the edge proxy
+
+  redis:
+    image: redis:7-alpine
+    container_name: owl-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - owl-internal
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: owl-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    networks:
+      - owl-internal
+    # Optional — only needed if you want local model inference
+    # Uncomment to save memory on constrained laptops:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 4G
+
+networks:
+  owl-internal:
+    driver: bridge
+
+volumes:
+  redis-data:
+  ollama-data:

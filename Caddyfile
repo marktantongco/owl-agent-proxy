@@ -1,0 +1,42 @@
+# Caddy edge proxy for OWL Agent Governed Token Plane
+#
+# Alternative to Nginx. Provides: automatic TLS, rate limiting, header forwarding.
+
+{
+    email admin@example.com
+    admin localhost:20190
+}
+
+gateway.example.com {
+
+    # Reverse proxy to local gateway
+    reverse_proxy 127.0.0.1:20128 {
+        # Forward headers — client gets gateway token, not provider keys
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Authorization {http.request.header.Authorization}
+
+        # Transport timeouts
+        transport {
+            response_header_timeout 300s
+        }
+    }
+
+    # Rate limiting (Caddy rate limit module may need to be built in)
+    # rate_limit {
+    #     zone gateway 10r/s burst 20
+    # }
+
+    # Security headers
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+
+    # Hide upstream headers that could leak provider info
+    header_down -X-Upstream-Provider
+    header_down -X-Provider-Key
+}
