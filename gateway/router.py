@@ -12,6 +12,7 @@ Routes requests based on:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -241,4 +242,4 @@ class Router:
         }
 
 
-import os  # noqa: E402 — needed for resolve_api_key
+

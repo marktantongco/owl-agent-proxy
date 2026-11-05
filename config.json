@@ -64,6 +64,33 @@
         }
       ]
     },
+    "free_catalog": {
+      "enabled": true,
+      "source": "marktantongco/awesome-free-llm-apis",
+      "vendored_file": "gateway/free_catalog/providers.json",
+      "default_cost_per_1k_tokens": 0.0,
+      "providers": {
+        "aion-labs": { "enabled": true, "api_key_env": "AION_API_KEY" },
+        "cohere": { "enabled": true, "api_key_env": "COHERE_API_KEY" },
+        "gemini": { "enabled": true, "api_key_env": "GEMINI_API_KEY" },
+        "mistral": { "enabled": true, "api_key_env": "MISTRAL_API_KEY" },
+        "z-ai": { "enabled": false, "api_key_env": "Z_AI_API_KEY" },
+        "cloudflare-workers-ai": { "enabled": true, "api_key_env": "CLOUDFLARE_API_TOKEN" },
+        "gonka-broker": { "enabled": false, "api_key_env": "GONKA_API_KEY" },
+        "groq": { "enabled": true, "api_key_env": "GROQ_API_KEY" },
+        "kilo-code": { "enabled": true, "api_key_env": null },
+        "llm7": { "enabled": true, "api_key_env": "LLM7_API_KEY" },
+        "modelscope": { "enabled": false, "api_key_env": "MODELSCOPE_API_KEY" },
+        "nvidia-nim": { "enabled": true, "api_key_env": "NVIDIA_API_KEY" },
+        "openrouter": { "enabled": true, "api_key_env": "OPENROUTER_API_KEY" },
+        "ovhcloud": { "enabled": true, "api_key_env": null },
+        "siliconflow": { "enabled": false, "api_key_env": "SILICONFLOW_API_KEY" }
+      },
+      "dead_routes_denylist": [],
+      "is_paid_vendor_model_denylist": [
+        "claude-", "gpt-5.", "gemini-", "grok-", "glm-5.", "minimax-"
+      ]
+    },
     "circuit_breaker": {
       "threshold": 5,
       "cooldown_seconds": 60
