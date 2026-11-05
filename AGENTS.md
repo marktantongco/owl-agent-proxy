@@ -582,6 +582,121 @@ python reverse_proxy.py --stealth-browser chrome124
 
 ---
 
+## Governed Token Plane (v1.0.0)
+
+**Per Marky's recommendation: do NOT chase "unlimited free tokens" via reverse proxy.**
+Instead build a governed token plane: OpenCode v2 → gateway token → Nginx/Caddy edge →
+9Router/LiteLLM gateway (`127.0.0.1:20128`) → local models (Ollama/vLLM) + free tiers +
+paid fallback + Redis cache + per-user budgets + provider key isolation.
+
+### Architecture
+
+```
+Client -> gateway token -> Nginx/Caddy edge (TLS + rate limit)
+    -> gateway app.py (auth + route + cache + bill + audit)
+    -> local Ollama/vLLM (tier 1, free)
+    -> free-tier cloud (tier 2, burst)
+    -> paid fallback (tier 3)
+```
+
+Clients present only a gateway token. Provider API keys live exclusively in the gateway
+environment/secrets manager — never sent to clients, never logged.
+
+### Components
+
+| File | Purpose |
+|------|---------|
+| `gateway/app.py` | FastAPI gateway — auth, routing, caching, billing, circuit breaker, audit logging |
+| `gateway/auth.py` | Bearer token validation — clients authenticate with gateway token, not provider keys |
+| `gateway/router.py` | Model routing: local → free cloud → paid fallback, tiered selection |
+| `gateway/cache.py` | Redis-backed response cache (exact match, TTL-based) |
+| `gateway/billing.py` | Per-client token/cost budgets with kill switch |
+| `gateway/circuit_breaker.py` | Per-provider circuit breaker with fallback chain |
+| `gateway/audit.py` | Redacted audit logging — no provider keys or secrets in logs |
+| `nginx.conf` | Nginx edge proxy: TLS termination, rate limiting, header forwarding |
+| `Caddyfile` | Caddy edge proxy (alternative to Nginx) |
+| `docker-compose.yml` | Local dev stack: gateway + Redis + Ollama |
+| `tests/test_gateway.py` | 23 gateway unit tests |
+
+### Key Design Principles
+
+1. **Provider key isolation** — Provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are read
+   from the gateway environment only. Clients never receive them. Audit logs redact all
+   sensitive fields.
+
+2. **Local-first routing** — Ollama/vLLM local models are preferred (tier 1, hardware cost
+   only). Free-tier cloud is burst capacity. Paid fallback is used only when necessary and
+   budget allows.
+
+3. **Budget enforcement** — Per-client token and cost limits with 24-hour windows. Exceeded
+   budgets block further requests until reset.
+
+4. **Circuit breaker** — Per-provider failure tracking with configurable threshold and
+   cooldown. Failed providers are skipped in favor of the next in the fallback chain.
+
+5. **Redis cache** — Cached responses for repeated prompts, tool schemas, and system
+   prompts. Disabled gracefully when Redis is unavailable.
+
+### Configuration (`config.json` governed_token_plane section)
+
+```json
+{
+  "governed_token_plane": {
+    "enabled": true,
+    "gateway": {
+      "host": "127.0.0.1",
+      "port": 20128,
+      "token_env": "OWL_GATEWAY_TOKEN",
+      "default_token_limit": 100000,
+      "default_cost_limit_usd": 10.0,
+      "window_seconds": 86400,
+      "kill_switch": false,
+      "cache_enabled": true,
+      "cache_ttl": 3600
+    },
+    "routing": {
+      "strategy": "local_first",
+      "tiers": [
+        { "tier": 1, "name": "local", "provider": "ollama", "model": "qwen2.5:14b", "cost_per_1k_tokens": 0.0 },
+        { "tier": 2, "name": "free_cloud", "provider": "openai", "model": "gpt-4o-mini", "cost_per_1k_tokens": 0.15 },
+        { "tier": 3, "name": "paid_fallback", "provider": "anthropic", "model": "claude-3-5-haiku-20241022", "cost_per_1k_tokens": 0.80 }
+      ]
+    },
+    "circuit_breaker": { "threshold": 5, "cooldown_seconds": 60 },
+    "edge": {
+      "nginx": { "listen": 443, "rate_limit": "10r/s", "burst": 20 },
+      "caddy": { "admin_port": 20190 }
+    },
+    "key_isolation": {
+      "provider_keys_in_gateway_env_only": true,
+      "clients_receive_gateway_tokens_only": true,
+      "no_provider_keys_leaked_to_clients": true
+    }
+  }
+}
+```
+
+### Running the Gateway
+
+```bash
+# Generate a gateway token (one-time for local dev)
+export OWL_GATEWAY_TOKEN=$(python3 -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+
+# Run gateway locally (binds to 127.0.0.1:20128 only)
+python gateway/app.py
+
+# Or with Docker Compose (gateway + Redis + Ollama)
+docker-compose up -d
+
+# Test with curl (gateway token required)
+curl -X POST http://127.0.0.1:20128/v1/chat/completions \
+  -H "Authorization: Bearer $OWL_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
 ## Configuration (config.json)
 
 ```json
@@ -610,12 +725,13 @@ Config precedence: explicit argument → `config.json` → built-in default.
 
 | Check | Result |
 |-------|--------|
-| Test suite (`pytest tests/ -q`) | **507 passed, 0 failed, 82% coverage** |
+| Test suite (`pytest tests/ -q`) | **548 passed, 0 failed, 82% coverage** |
+| Gateway tests (`tests/test_gateway.py`) | **23 passed** (auth, circuit breaker, cache, billing, router, integration) |
 | verify-install.py | **18 PASS, 0 FAIL, 2 SKIP** |
 | Harvester persistence test | **PASSED** (save → reload → state restored) |
 | Vendored import test | **PASSED** (imports from `~/.owl-agent/`) |
 
-**Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545, plus others)
+**Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545) + gateway/ (~2,000 lines)
 **Uncovered lines**: 418 (18%)
 
 ---
@@ -653,6 +769,20 @@ Config precedence: explicit argument → `config.json` → built-in default.
 | free-search-aggregator | vulcanusalex/free-search-aggregator | 85 | DEFINE |
 | freeUnlimited-websearch | lngu/openclaw-skill-freeunlimited-websearch | 565 | DEFINE |
 | you-web | youdotcom-oss/agent-skills | 81 | DEFINE |
+
+### Governed Token Plane Skills (from plan)
+
+| Skill | Source | Pipeline Stage | Purpose |
+|-------|--------|---------------|---------|
+| find-skills | vercel-labs/skills | DEFINE | #1 meta-skill — discover/install other skills |
+| meta-skill | vercel-labs/skills | DEFINE | Conceptual — 404 on skills.sh, find-skills serves this role |
+| parallel-findall | parallel-web/parallel-agent-skills | DEFINE | Entity discovery — find providers/models matching criteria |
+| impeccable | pbakaus/impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize |
+| agent-browser | vercel-labs/agent-browser | DEFINE | Browser automation — stealth verification of gateway endpoints |
+| github-researcher | lingzhi227/agent-research-skills | DEFINE | GitHub repo triage — CVEs, staleness, maintenance |
+| brainstorming | obra/superpowers | PLAN | Structured ideation for gateway architecture |
+| writing-plans | obra/superpowers | PLAN | Detailed implementation plans with checkpoints |
+| systematic-debugging | obra/superpowers | BUILD/VERIFY | Hypothesis-driven debug loop for gateway issues |
 
 ### Conceptual Skills (14 stubs in `skills/`) — see next section.
 
@@ -806,7 +936,7 @@ Combines:
 - **Laptop memory constraints** — bare metal preferred
 - **Plan → validate → execute**
 - **Never output placeholder text**
-- **Testing**: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 507 tests passing (trust tests over docs prose)
+- **Testing**: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 548 tests passing (trust tests over docs prose)
 - **CI/CD**: `.github/scripts/ci-check.sh` (protocol escalation + credential guard)
 - **Config precedence**: explicit argument → `config.json` → built-in default
 - **Version drift note**: Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
@@ -821,7 +951,8 @@ Combines:
 | #28 | Upgrade reverse proxy with protocol routing, circuit breaker, and research skills | Merged | (via #27 merge) |
 | #29 | Update AGENTS.md with conceptual skills, docs locations, and test counts | Merged | (via #30 merge) |
 | #30 | Add on-disk persistence to UpstreamHarvester and vendored pool engine | Merged | (merge commit on main) |
-| #31 | Stealth mode reverse proxy upgrade (curl_cffi TLS/JA3/JA4 impersonation) | Pending merge | — |
+| #31 | Stealth mode reverse proxy upgrade (curl_cffi TLS/JA3/JA4 impersonation) | Merged | (via #32 merge) |
+| #32 | Stealth mode reverse proxy v2.1 complete | Merged | (merge commit on main) |
 
-**Current branch**: `arena/26f68c45-owl-agent-proxy` (active)
-**Current commit**: `9f0eaf6` — Merge pull request #31 from marktantongco/arena/0edc59d5-owl-agent-proxy
+**Current branch**: `arena/0866387c-owl-agent-proxy` (active)
+**Current work**: Governed token plane (OpenCode v2 → gateway → local + free + paid + cache + budgets, provider key isolation)

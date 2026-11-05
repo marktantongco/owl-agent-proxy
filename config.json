@@ -19,5 +19,69 @@
       "cookie_persistence": true,
       "timing_jitter_ms": [500, 2500]
     }
+  },
+  "governed_token_plane": {
+    "enabled": true,
+    "gateway": {
+      "host": "127.0.0.1",
+      "port": 20128,
+      "token_env": "OWL_GATEWAY_TOKEN",
+      "default_token_limit": 100000,
+      "default_cost_limit_usd": 10.0,
+      "window_seconds": 86400,
+      "kill_switch": false,
+      "cache_enabled": true,
+      "cache_ttl": 3600
+    },
+    "routing": {
+      "strategy": "local_first",
+      "tiers": [
+        {
+          "tier": 1,
+          "name": "local",
+          "provider": "ollama",
+          "model": "qwen2.5:14b",
+          "api_base": "http://127.0.0.1:11434",
+          "cost_per_1k_tokens": 0.0
+        },
+        {
+          "tier": 2,
+          "name": "free_cloud",
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "api_base": "https://api.openai.com/v1",
+          "api_key_env": "OPENAI_API_KEY",
+          "cost_per_1k_tokens": 0.15
+        },
+        {
+          "tier": 3,
+          "name": "paid_fallback",
+          "provider": "anthropic",
+          "model": "claude-3-5-haiku-20241022",
+          "api_base": "https://api.anthropic.com",
+          "api_key_env": "ANTHROPIC_API_KEY",
+          "cost_per_1k_tokens": 0.80
+        }
+      ]
+    },
+    "circuit_breaker": {
+      "threshold": 5,
+      "cooldown_seconds": 60
+    },
+    "edge": {
+      "nginx": {
+        "listen": 443,
+        "rate_limit": "10r/s",
+        "burst": 20
+      },
+      "caddy": {
+        "admin_port": 20190
+      }
+    },
+    "key_isolation": {
+      "provider_keys_in_gateway_env_only": true,
+      "clients_receive_gateway_tokens_only": true,
+      "no_provider_keys_leaked_to_clients": true
+    }
   }
 }
