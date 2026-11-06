@@ -1538,11 +1538,15 @@ Config precedence: explicit argument → `config.json` → built-in default.
 | Check | Result |
 |-------|--------|
 | Test suite (`pytest tests/ -q`) | **571 passed, 0 failed, 82% coverage** |
-| Gateway tests (`tests/test_gateway.py`) | **23 passed** (auth, circuit breaker, cache, billing, router, integration) |
-| Free catalog tests (`tests/test_free_catalog.py`) | **23 passed, 1 skipped** (catalog loading, routes, rate limits, paid vendor filter) |
+| Gateway tests (`tests/test_gateway.py`) | **23 passed, 0 failed** (auth, circuit breaker, cache, billing, router, integration) |
+| Free catalog tests (`tests/test_free_catalog.py`) | **23 passed, 0 failed** (1 skipped) (catalog loading, routes, rate limits, paid vendor filter) |
+| Reverse proxy tests (`tests/test_reverse_proxy.py`) | **41 passed, 0 failed** (19 stealth mode tests) |
+| Stealth tests (`tests/test_stealth.py`) | **19 passed, 0 failed** |
+| V71 integration tests (`tests/test_v71_integration.py`) | **44 passed, 0 failed** |
 | verify-install.py | **18 PASS, 0 FAIL, 2 SKIP** |
 | Harvester persistence test | **PASSED** (save → reload → state restored) |
 | Vendored import test | **PASSED** (imports from `~/.owl-agent/`) |
+| Audit verification script (`scripts/audit-verify.sh`) | **6/6 checks PASSED, 0 failures** |
 
 **Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545) + gateway/ (~3,400 lines including free_catalog/)
 **Uncovered lines**: 418 (18%)
@@ -1797,10 +1801,10 @@ Combines:
 - **Laptop memory constraints** — bare metal preferred
 - **Plan → validate → execute**
 - **Never output placeholder text**
-- **Testing**: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 548 tests passing (trust tests over docs prose)
+- **Testing**: pytest with `tests/conftest.py` (hermetic, blocks outbound sockets) — 571 tests passing, 0 failed (trust tests over docs prose)
 - **CI/CD**: `.github/scripts/ci-check.sh` (protocol escalation + credential guard)
 - **Config precedence**: explicit argument → `config.json` → built-in default
-- **Version drift note**: Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
+- **Version drift note**: Docs disagree (About says v3.0, README says v7.1). Trust the tests (571 passing), not the prose.
 
 ---
 
@@ -1817,6 +1821,7 @@ Combines:
 | #33 | Governed token plane v1.0.0 (auth, router, cache, billing, circuit breaker, audit) | Merged | `aa45684040e07885b6d61dab3103636c1a5b9138` |
 | #34 | Tier restructure: free catalog → paid fallback → local (awesome-free-llm-apis vendored) | Merged | `debfba10661ec3eea0834ef13da59614b3befbcb` |
 | #35 | CommandCode compatibility + AI provider agent ideas + Obsidian memory integration | Merged | `cd1f168e880ad1640543bd6a6d079ee74c094aa4` |
+| #36 | Comprehensive AGENTS.md: full architecture layers, schematics, installation guide, all URLs | Merged | `8cd4a2a6058f91cd4e28717751ed0e6e28d4f643` |
 
-**Current branch**: `arena/afd6f3c2-owl-agent-proxy` (active)
-**Current work**: Governed token plane complete — free catalog first → paid fallback → local last; all PRs merged to main
+**Current branch**: `arena/84a46d1e-owl-agent-proxy` (active)
+**Current work**: Governed token plane complete — free catalog first → paid fallback → local last; all PRs merged to main; 0 test failures
