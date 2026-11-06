@@ -516,7 +516,7 @@ The development followed the **DEFINE → PLAN → BUILD → VERIFY → REVIEW �
 ### Layer 4: VERIFY — Test & Validate
 
 1. **Installed Python dependencies**: `pytest`, `pytest-asyncio`, `pytest-cov`, `aiohttp`, `aiofiles`, `httpx` via `pip3 install --break-system-packages`.
-2. **Ran full test suite**: 507 passed, 0 failed, 82% coverage.
+2. **Ran full test suite**: 571 passed, 0 failed, 82% coverage.
 3. **Ran verify-install.py**: 18 PASS, 0 FAIL, 2 SKIP.
 4. **End-to-end persistence test**: save → reload → verified `_seen` and health stats restored correctly.
 5. **Verified vendored import**: `proxy_harvester.py` imports correctly from `~/.owl-agent/`.
@@ -581,7 +581,7 @@ The development followed the **DEFINE → PLAN → BUILD → VERIFY → REVIEW �
 1. **Install gateway runtime deps**: `pip3 install --break-system-packages fastapi uvicorn httpx redis`.
 2. **Run gateway unit tests**: `python3 -m pytest tests/test_gateway.py -v` — 23 passed, 0 failed.
 3. **Run free catalog tests**: `python3 -m pytest tests/test_free_catalog.py -v` — 23 passed, 0 failed.
-4. **Run full test suite**: `python3 -m pytest tests/ -q` — 534 passed, 37 failed (all pre-existing ModuleNotFoundError in test_stealth.py/test_v71_integration.py, unrelated).
+4. **Run full test suite**: `python3 -m pytest tests/ -q` — 571 passed, 0 failed.
 5. **Verify tier ordering**: Router selects tier 1 (free catalog) first, falls to tier 2 (paid) when circuits open/budget exhausted, falls to tier 3 (local) regardless of budget.
 6. **Verify circuit breaker availability**: Dynamic from all router providers, not hardcoded.
 7. **Verify paid-vendor filtering**: Models matching `claude-*`, `gpt-5.*`, `gemini-*`, `grok-*`, `glm-5.*`, `minimax-*` filtered from free routes.
@@ -666,7 +666,7 @@ print('load_state:', hasattr(proxy_harvester.UpstreamHarvester, 'load_state'))
 python -m pytest tests/ -q
 ```
 
-Expected: `507 passed in X.XXs`
+Expected: `571 passed in X.XXs`
 
 ### Step 8: Run Installation Verification
 
@@ -842,7 +842,7 @@ python3 -m pytest tests/test_free_catalog.py -v
 python3 -m pytest tests/ -q
 ```
 
-Expected: 23 gateway tests passed, 23 free catalog tests passed, 534 total passed (37 pre-existing unrelated failures).
+Expected: 23 gateway tests passed, 23 free catalog tests passed, 571 total passed, 0 failed.
 
 ### Step 19: Run Governed Token Plane with Docker Compose
 
