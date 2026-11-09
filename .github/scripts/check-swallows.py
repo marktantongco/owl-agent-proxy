@@ -12,6 +12,17 @@ proxies, the caller sees ``null``, and nothing anywhere says why. Such handlers
 must either log, or carry an explicit ``# swallow: <reason>`` comment stating why
 silence is correct here.
 
+The second check covers the "swallowed capability" case that ``ci-check.sh``
+cannot see: it only matches an explicit keyword escalation (``protocol=` plus a
+quoted escalated value on the same line), so a protocol chosen through a
+dict — ``CONFIG = {"protocol": "browser"}`` or ``**params`` — escalates silently
+and passes the escalation guard. Any literal dict value that is an escalated
+protocol is reported here unless it carries the same ``# swallow: <reason>``
+marker or a ``# no-escalation: <reason>`` note.
+
+A guard that can be walked around by changing a keyword argument to a dict is
+not a guard; it is a formality.
+
 Stdlib only. Exit 0 clean, 1 violations.
 """
 
@@ -91,6 +102,38 @@ def scan(path: Path) -> tuple[list[str], list[str]]:
     return violations, notes
 
 
+ESCALATED_PROTOCOLS = {"ja3", "browser", "stealth", "websocket", "http/2"}
+
+
+def scan_dict_protocols(path: Path) -> list[str]:
+    """Protocol values chosen via a dict literal, which ci-check.sh cannot see."""
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    tree = ast.parse(source, filename=str(path))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not isinstance(key, ast.Constant) or key.value != "protocol":
+                continue
+            if not isinstance(value, ast.Constant) or value.value not in ESCALATED_PROTOCOLS:
+                continue
+            start = max(0, node.lineno - 4)
+            end = getattr(node, "end_lineno", node.lineno)
+            context = "\n".join(lines[start:end])
+            if MARKER in context or "# no-escalation:" in context:
+                continue
+            violations.append(
+                f"{path.relative_to(ROOT)}:{value.lineno}: protocol chosen via dict "
+                f"({value.value!r}) — the escalation guard cannot match this form. Add a "
+                f"justification "
+                f"beside it or '{MARKER} <reason>'"
+            )
+    return violations
+
+
 def main() -> int:
     targets = sorted(
         p for p in list(ROOT.glob("*.py")) if not p.name.startswith("_")
@@ -105,6 +148,7 @@ def main() -> int:
         found, info = scan(path)
         violations.extend(found)
         notes.extend(info)
+        violations.extend(scan_dict_protocols(path))
 
     for note in notes:
         print(f"INFO: {note}")
@@ -115,7 +159,8 @@ def main() -> int:
             print(f"  - {violation}")
         return 1
 
-    print(f"PASSED: {len(notes)} narrow silent handler(s) allowed, 0 broad handler(s) swallowing")
+    print(f"PASSED: {len(notes)} narrow silent handler(s) allowed, "
+          "0 broad handlers swallowing, 0 dict-chosen protocol escalations")
     return 0
 
 

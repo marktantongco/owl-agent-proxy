@@ -39,10 +39,22 @@ jobs:
       # The README described a layered design that the tree did not have. This
       # fails when docs/architecture/MODULE_GRAPH.md is stale against the real
       # AST import graph, so the documented layer table cannot drift again.
-      - name: Regenerate and compare
+      - name: Regenerate and compare the module map
         run: python scripts/gen-architecture.py --check
-      - name: Checker self-test (must catch an upward edge)
-        run: python tests/test_architecture_check.py
+      - name: AGENTS.md generated tables match their sources
+        # The generator counts tests with `pytest --collect-only`, so this job
+        # needs what the tests job needs: if a module cannot be imported the
+        # count is wrong, and a wrong count must fail loudly rather than render
+        # as "?" (which is how this step first broke). Same install set as the
+        # tests matrix, for the same reason.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --quiet -r requirements.txt -r requirements-dev.txt
+          python scripts/gen-docs.py --check
+      - name: Checker self-tests (must catch a stale map and a stale table)
+        run: |
+          python tests/test_architecture_check.py
+          python tests/test_docs_generator.py
 
   tests:
     name: Tests (Python ${{ matrix.python }})
