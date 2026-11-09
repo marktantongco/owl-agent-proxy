@@ -136,3 +136,46 @@ mcp_proxy_server.py --selftest         OK
   exercised against a real target.
 - The vendored `free-search-aggregator` sources, beyond their lock hash.
 - PR #11 and PR #22, which remain open and are owned elsewhere.
+
+---
+
+## 6. The bug CI caught that local runs could not
+
+The first push of this follow-on failed the architecture job. Worth recording,
+because it is the third instance of the same pattern in this repository.
+
+`scripts/gen-docs.py` counts tests with `pytest --collect-only`. On my machine
+that worked, because my `.venv` had every dependency. CI installed only plain
+`pytest` into a job that had no runtime deps, and two things then went wrong in
+sequence:
+
+1. `pytest.ini` sets `--cov=…`; without `pytest-cov`, pytest exited **2** with a
+   usage error.
+2. `_collect_counts` matched `(\d+) tests? collected` against empty output and
+   quietly recorded nothing, so the table rendered `?` for all 11 files.
+
+The generator then compared that degraded table with the committed one and
+reported **STALE** — a false failure. But the same silent `?` would have been a
+false *pass* if the committed table had also contained `?`. Exit code 2 was the
+only signal, and it was being discarded.
+
+Fixes, at both ends:
+
+- `_collect_counts` passes `-o addopts=` (neutralising the ini file) and raises
+  `SystemExit` with pytest's own stderr when a count cannot be determined. A
+  count is now either a number or a hard failure.
+- The CI job installs `requirements.txt` + `requirements-dev.txt`, the same set
+  the tests matrix uses, because `--collect-only` imports every test module.
+
+And a second round: even with `pytest-cov` installed, `test_gateway.py` could not
+import `fastapi`, so the count failed again — correctly, this time, with the
+traceback in the message. That is how the missing-deps problem surfaced instead
+of hiding.
+
+`test_collect_counts_fails_loudly_instead_of_returning_question_marks` pins it.
+
+**The pattern, three times over:** "0 tests collected, exit 0" (unittest on the
+architecture check), "0 failed, README says 484" (main's red CI), and "? for every
+file" here. Every one was a check that reported success while measuring nothing.
+That is the failure mode this repository keeps producing, and the reason the
+generators raise instead of defaulting.
