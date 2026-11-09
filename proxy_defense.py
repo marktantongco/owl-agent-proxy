@@ -495,7 +495,13 @@ class FilterPipeline:
                     continue
                 if client_ip == line or self._cidr_match(client_ip, line):
                     return True
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # Unreadable or malformed list file: no match, with the reason logged.
+            logger.warning("ip filter list %s unusable: %s", list_path, exc)
+            return False
+        except AttributeError as exc:
+            # A RequestContext whose `headers` is None: no forwarded-for, no match.
+            logger.debug("ip filter skipped, no headers on the context: %s", exc)
             return False
         return False
 
@@ -525,7 +531,14 @@ class FilterPipeline:
             for pat in patterns:
                 if re.search(pat, target):
                     return True
-        except Exception:
+        except (OSError, re.error) as exc:
+            # Bad regex or unreadable list: treat as "no match" rather than
+            # letting a filter typo block or admit every request.
+            logger.warning("regexp filter list %s unusable: %s", list_path, exc)
+            return False
+        except AttributeError as exc:
+            # Optional `headers` on the context may be None.
+            logger.debug("regexp filter skipped, no headers on the context: %s", exc)
             return False
         return False
 
@@ -553,7 +566,10 @@ class FilterPipeline:
                 return from_minutes <= now_minutes <= to_minutes
             # overnight window
             return now_minutes >= from_minutes or now_minutes <= to_minutes
-        except Exception:
+        except (KeyError, TypeError, ValueError) as exc:
+            # Malformed window in the config ("25:00", unknown timezone): no
+            # match, with the reason on stderr instead of a silent False.
+            logger.warning("time filter misconfigured: %s", exc)
             return False
 
 
@@ -1326,8 +1342,10 @@ class ProxyRotator(UpstreamHarvestingMixin):
             # otherwise the entry waits until start_upstream() is called.
             try:
                 self._validation_queue.put_nowait(url)
-            except Exception:
-                pass
+            except Exception as exc:  # swallow: queue only exists once the
+                # validation loop is running; before that the entry simply waits
+                # for start_upstream() to sweep it.
+                logger.debug("validation queue unavailable for %s: %s", url, exc)
 
         self._affinity = None          # SessionAffinityManager (lazy)
         self._harvester = None         # UpstreamHarvester (lazy)

@@ -799,6 +799,8 @@ class TestHTTPCacheMore(unittest.TestCase):
         async def run():
             cache = HTTPCache(ttl=300)
             resp1 = CachedResponse(status=200, content=b"h1", headers={}, timestamp=time.time(), ttl=300, protocol="http/1.1")
+            # no-escalation: cache-key fixture. The protocol is a cache dimension
+            # here, proving the key mixes it in; no request is ever sent.
             resp2 = CachedResponse(status=200, content=b"h2", headers={}, timestamp=time.time(), ttl=300, protocol="http/2")
             await cache.set("GET", "https://example.com", resp1)
             await cache.set("GET", "https://example.com", resp2)
@@ -1603,6 +1605,60 @@ class TestFilterPipeline(unittest.TestCase):
                              protocol="http/1.1")
         action, name = pipeline.evaluate(ctx)
         self.assertIsNone(action)
+
+    def test_ip_rule_with_no_headers_does_not_raise(self):
+        """`headers=None` (a hand-built context) must be a non-match, not a crash.
+
+        Tightening the handler from `except Exception` to specific types is only
+        safe if every realistic failure is covered; this pins the None-headers
+        case that the original broad handler was quietly absorbing.
+        """
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("10.0.0.0/8\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-ip", rule_type="ip",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers=None, protocol="http/1.1")
+            action, _ = pipeline.evaluate(ctx)
+            self.assertIsNone(action)
+        finally:
+            os.unlink(tmp)
+
+    def test_regexp_rule_with_no_headers_does_not_raise(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("example\\.com\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="ban-regexp", rule_type="regexp",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers=None, protocol="http/1.1")
+            action, _ = pipeline.evaluate(ctx)
+            self.assertEqual(action, FilterAction.REJECT, "url still matches without headers")
+        finally:
+            os.unlink(tmp)
+
+    def test_regexp_rule_invalid_pattern_is_a_non_match(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("([unclosed\n")
+            tmp = f.name
+        try:
+            rules = [FilterRule(name="bad-regex", rule_type="regexp",
+                                params={"list": tmp}, action=FilterAction.REJECT)]
+            pipeline = FilterPipeline(rules)
+            ctx = RequestContext(method="GET", url="http://example.com",
+                                 params=None, headers={}, protocol="http/1.1")
+            action, _ = pipeline.evaluate(ctx)
+            self.assertIsNone(action, "a filter typo must not reject traffic")
+        finally:
+            os.unlink(tmp)
 
     def test_regexp_rule_matches(self):
         import tempfile, os

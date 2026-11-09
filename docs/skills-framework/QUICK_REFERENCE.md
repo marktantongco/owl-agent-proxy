@@ -10,7 +10,7 @@
 
 **OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy with protocol escalation, circuit breaker, and load balancing.
 
-**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (507 passing), not prose.
+**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (580 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not prose.
 
 ---
 
@@ -36,7 +36,7 @@
 | Stage | Skills |
 |-------|--------|
 | DEFINE | triage, diagnosing-bugs, grill-me, grilling, find-skills, agent-browser, grill-with-docs, parallel-deep-research, parallel-findall, github-research, free-search-aggregator, freeUnlimited-websearch, you-web, agent-skills, codemap, meta-skill, agent-reach, duckduckgo-search, exa-web-search-free |
-| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman |
+| PLAN | domain-modeling, to-spec, grill-powers, grill-with-tail, ponytail, ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, caveman |
 | BUILD | writing-plans, executing-plans, subagent-driven-development, systematic-debugging, parallel-agent-skills |
 | VERIFY | verification-before-completion, systematic-debugging |
 | REVIEW | code-review, finishing-a-development-branch, devils-advocate, impeccable |
@@ -58,7 +58,7 @@
 | 8 | orchestrate | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
 | 9 | chain-of-thought | PLAN | Step-by-step reasoning for architecture decisions |
 | 10 | headroom | PLAN | Assess capacity, constraints, resource availability before build |
-| 11 | Caveman | PLAN | Simplest solution first — prevent over-engineering during design |
+| 11 | caveman | PLAN | Simplest solution first — prevent over-engineering during design |
 | 12 | parallel-agent-skills | BUILD | Execute multiple agent skills in parallel during implementation |
 | 13 | devils-advocate | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
 | 14 | impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
@@ -102,7 +102,7 @@ agent-run run <issue> --repo <owner/repo> # Automated ticket delivery
 ## Verification
 
 ```bash
-python -m pytest tests/ -q                                    # Test suite (484 passed, 83% coverage)
+python -m pytest tests/ -q                                    # Test suite (580 passed, 82% coverage)
 python scripts/verify-install.py --owl-home <path> --no-live  # Install verify (18 PASS, 0 FAIL, 2 SKIP)
 agent-run doctor                                              # Delivery tool readiness
 ```

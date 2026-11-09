@@ -28,6 +28,22 @@ jobs:
       - name: Validate SKILL.md frontmatter
         run: python .github/scripts/check-skills.py
 
+  architecture:
+    name: Architecture map matches the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The README described a layered design that the tree did not have. This
+      # fails when docs/architecture/MODULE_GRAPH.md is stale against the real
+      # AST import graph, so the documented layer table cannot drift again.
+      - name: Regenerate and compare
+        run: python scripts/gen-architecture.py --check
+      - name: Checker self-test (must catch an upward edge)
+        run: python tests/test_architecture_check.py
+
   tests:
     name: Tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest

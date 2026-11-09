@@ -8,11 +8,11 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 507 offline tests.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 580 offline tests.
 
 `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy on a configurable port, forwarding to upstream targets with protocol escalation (http/1.1 → http/2 → ja3 → websocket → browser → stealth), circuit breaker, and health-aware load balancing.
 
-**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (580 passing), not the prose. `docs/architecture/MODULE_GRAPH.md` is generated from the tree, so trust it over any hand-written layer table.
 
 ---
 
@@ -43,7 +43,7 @@
 | 8 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP |
 | 9 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
 | 10 | `headroom` | PLAN | Assess capacity, constraints, and resource availability before committing to build |
-| 11 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
+| 11 | `caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
 | 12 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
 | 13 | `devils-advocate` | REVIEW | Systematically challenge assumptions, identify failure modes, stress-test before commit |
 | 14 | `impeccable` | REVIEW | Full-spectrum quality framework: audit, critique, distill, adapt, optimize, delight, result |
@@ -88,7 +88,7 @@
 | `orchestrate` | Custom stub (`skills/orchestrate/`) | PLAN |
 | `chain-of-thought` | Custom stub (`skills/chain-of-thought/`) | PLAN |
 | `headroom` | Custom stub (`skills/headroom/`) | PLAN |
-| `Caveman` | Custom stub (`skills/Caveman/`) | PLAN |
+| `caveman` | Custom stub (`skills/caveman/`) | PLAN |
 | `parallel-agent-skills` | Custom stub (`skills/parallel-agent-skills/`) | BUILD |
 | `devils-advocate` | Custom stub (`skills/devils-advocate/`) | REVIEW |
 | `impeccable` | Custom stub (`skills/impeccable/`) | REVIEW |
@@ -123,15 +123,15 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 | # | Pipeline | Stack 1 Job | End-to-End Skill Flow |
 |---|----------|-------------|----------------------|
 | **1** | **Bug Fix** | Fix a bug — Something is broken | `triage` → `diagnosing-bugs` → `systematic-debugging` → `writing-plans` → `executing-plans` → `verification-before-completion` → `finishing-a-development-branch` |
-| **2** | **Feature Development** | New feature — You want something new | `agent-skills` → `codemap` → `grill-me` → `grilling` → `domain-modeling` → `to-spec` → `grill-powers` → `ralph-prompt-multi-task` → `chain-of-thought` → `headroom` → `Caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
+| **2** | **Feature Development** | New feature — You want something new | `agent-skills` → `codemap` → `grill-me` → `grilling` → `domain-modeling` → `to-spec` → `grill-powers` → `ralph-prompt-multi-task` → `chain-of-thought` → `headroom` → `caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
 | **3** | **Security Fix** | Something isn't safe | `triage` → `diagnosing-bugs` → `systematic-debugging` → `writing-plans` → `executing-plans` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
 | **4** | **Performance Optimization** | It's too slow | `triage` → `diagnosing-bugs` → `systematic-debugging` → `writing-plans` → `executing-plans` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
-| **5** | **Documentation & Spec** | Write instructions — People need to understand it | `agent-skills` → `codemap` → `grill-with-docs` → `domain-modeling` → `to-spec` → `ponytail` → `ralph-prompt-multi-task` → `Caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
+| **5** | **Documentation & Spec** | Write instructions — People need to understand it | `agent-skills` → `codemap` → `grill-with-docs` → `domain-modeling` → `to-spec` → `ponytail` → `ralph-prompt-multi-task` → `caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
 | **6** | **Incident Response** | Emergency — Something big broke | `triage` → `diagnosing-bugs` → `systematic-debugging` → `writing-plans` → `executing-plans` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
-| **7** | **Refactoring** | Clean up — It's messy | `agent-skills` → `codemap` → `grill-me` → `grilling` → `to-spec` → `chain-of-thought` → `headroom` → `Caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
+| **7** | **Refactoring** | Clean up — It's messy | `agent-skills` → `codemap` → `grill-me` → `grilling` → `to-spec` → `chain-of-thought` → `headroom` → `caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
 | **8** | **Dependency Update** | Update helpers — Tools are old | `agent-skills` → `codemap` → `agent-browser` → `find-skills` → `headroom` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
-| **9** | **Architecture Review** | Big picture — You're changing the design | `agent-skills` → `codemap` → `grill-me` → `grilling` → `domain-modeling` → `to-spec` → `grill-powers` → `ralph-prompt-multi-task` → `chain-of-thought` → `headroom` → `Caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
-| **10** | **Full Product Delivery** | Build new — You're making something from scratch | `agent-skills` → `codemap` → `grill-powers` → `ralph-prompt-multi-task` → `orchestrate` → `chain-of-thought` → `headroom` → `Caveman` → `writing-plans` → `executing-plans` → `subagent-driven-development` → `parallel-agent-skills` → `systematic-debugging` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` → `agent-run` |
+| **9** | **Architecture Review** | Big picture — You're changing the design | `agent-skills` → `codemap` → `grill-me` → `grilling` → `domain-modeling` → `to-spec` → `grill-powers` → `ralph-prompt-multi-task` → `chain-of-thought` → `headroom` → `caveman` → `writing-plans` → `executing-plans` → `parallel-agent-skills` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` |
+| **10** | **Full Product Delivery** | Build new — You're making something from scratch | `agent-skills` → `codemap` → `grill-powers` → `ralph-prompt-multi-task` → `orchestrate` → `chain-of-thought` → `headroom` → `caveman` → `writing-plans` → `executing-plans` → `subagent-driven-development` → `parallel-agent-skills` → `systematic-debugging` → `verification-before-completion` → `devils-advocate` → `impeccable` → `finishing-a-development-branch` → `agent-run` |
 
 ---
 

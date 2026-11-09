@@ -526,8 +526,9 @@ class MemoryBackend:
             if self._db is not None:
                 try:
                     self._db.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # swallow: close() on an already-broken
+                    # handle raises by definition; shutdown must not raise.
+                    logger.debug("memory backend close failed: %s", exc)
                 self._db = None
             self._release_file_lock()
 

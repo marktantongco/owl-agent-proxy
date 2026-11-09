@@ -75,7 +75,7 @@ Wraps curl_cffi `AsyncSession` with:
 - curl_cffi lazy import (not imported at module scope)
 
 ## Verification
-- Full test suite: 507+ passed, 0 failed
+- Full test suite: 580 passed, 0 failed
 - verify-install.py: 18 PASS, 0 FAIL, 2 SKIP
 - End-to-end: stealth client instantiates with browser impersonation
 
