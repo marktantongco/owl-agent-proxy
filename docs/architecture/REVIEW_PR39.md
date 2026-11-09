@@ -24,31 +24,52 @@ produced a finding. **No review feedback was lost by merging.**
 
 ## 2. Findings from this review
 
-### F1 — `skills-lock.json` has never matched the files it locks (pre-existing, not fixed)
+### F1 — `skills-lock.json` was unverifiable, not merely stale (fixed in v2)
 
-| Skill | Locked hash | Actual file |
-|-------|-------------|-------------|
-| `free-search-aggregator` | `db4fc8fe…` | `4d7b8340…` |
-| `freeUnlimited-websearch` | `1f7e9614…` | no such path (case) |
-| `github-research` | `e2fc4df5…` | `d59a0cf5…` |
-| `parallel-deep-research` | `f8d7f91c…` | `6d3523c2…` |
-| `parallel-findall` | `779785f4…` | `52ba700d…` |
-| `you-web` | `e04ce511…` | `aa84b1e8…` |
+**Correction.** The first version of this finding said the lazy options were
+"re-vendor from source" or "delete the lock", and that regenerating the hashes
+would "launder" a fork. That reasoning rested on an assumption I never tested:
+that the vendored files were modified forks. They are not.
 
-**Verified pre-existing:** identical mismatch set at parent `c5af2b3` and at
-`HEAD`. The `skillPath` values are repo-relative (`skills/github-research/SKILL.md`)
-but the files were vendored under `.agents/skills/<name>/`, and once through a
-signing/formatting pass. So the lock has always been decorative.
+| Skill | Vendored vs upstream |
+|-------|----------------------|
+| `free-search-aggregator` | byte-identical |
+| `github-research` | byte-identical |
+| `parallel-deep-research` | byte-identical |
+| `parallel-findall` | byte-identical |
+| `you-web` | byte-identical |
+| `freeunlimited-websearch` | **one line**: frontmatter `name:` `freeUnlimited-websearch` → `freeunlimited-websearch` (the kebab-case fix from #39) |
 
-**Not fixed, deliberately.** Regenerating hashes would make it agree with files
-that may themselves be modified forks — that converts a loud inconsistency into a
-silent false assurance, which is worse. The correct fix is to re-vendor from
-source, which needs network access to six upstream repos and is a supply-chain
-decision, not a cleanup.
+So there was nothing to launder. The real defect was narrower and worse: the
+`computedHash` values matched **nothing verifiable at all**.
 
-> Recommended next step: either re-vendor from source and regenerate the lock, or
-> delete `skills-lock.json` and say in the README that these skills are forks. Two
-> wrong options exist today; both are honest, but doing nothing is not.
+| Check | Result |
+|-------|--------|
+| sha256 of vendored file | no match |
+| sha256 of upstream at HEAD | no match |
+| sha256 at older upstream revisions | no match |
+| LF normalisation, trailing-whitespace strip, trailing-newline strip, body-after-frontmatter | no match |
+
+The v1 lock had therefore never been checkable. Its fields were also structurally
+wrong: `skillPath` was repo-relative (`skills/github-research/SKILL.md`) while the
+files are vendored flat at `.agents/skills/<name>/SKILL.md`, and the
+`freeUnlimited-websearch` key still carried the pre-kebab-case name.
+
+**Fixed in v2**, which records what `sha256:` actually covers:
+
+- `upstreamCommit` (+ date) — the upstream revision whose blob produced the
+  vendored content, so upstream `main` moving does not silently change the ship;
+- `vendoredPath` — where the file actually lives, not where upstream put it;
+- `contentHash: "sha256:…"` + `contentHashCovers` — scoped, so the algorithm is
+  never ambiguous;
+- `localModification` — present only for the one intentional edit, and the
+  verifier enforces that such a declaration covers **frontmatter only**.
+
+`scripts/verify-skills-lock.py` checks it offline in CI, `--remote` re-fetches the
+pinned commits (deliberately not in CI — a network hiccup must not redden a
+build), and `--update` re-pins when bumping a skill. Verified to fail on: a
+one-line append to a vendored file (offline), and a body edit hiding behind a
+declared `localModification` (remote).
 
 ### F2 — `AGENTS.md` advertised skills that do not exist (pre-existing, now generated)
 
