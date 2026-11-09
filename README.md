@@ -848,8 +848,18 @@ python scripts/gen-docs.py            # regenerate
 python scripts/gen-docs.py --check    # what CI runs (fails when stale)
 ```
 
-The post-merge review of the restructure, including the two findings left
-deliberately unfixed, is in [`docs/architecture/REVIEW_PR39.md`](docs/architecture/REVIEW_PR39.md).
+The post-merge review of the restructure — including a correction to its own
+first reading of the skills lock — is in
+[`docs/architecture/REVIEW_PR39.md`](docs/architecture/REVIEW_PR39.md).
+
+Vendored skills are pinned in `skills-lock.json` (upstream commit + sha256 of the
+vendored bytes) and checked offline in CI:
+
+```bash
+python scripts/verify-skills-lock.py            # what CI runs
+python scripts/verify-skills-lock.py --remote   # re-fetch the pinned commits
+python scripts/verify-skills-lock.py --update   # re-pin after bumping a skill
+```
 
 ---
 

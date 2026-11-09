@@ -27,6 +27,13 @@ jobs:
           python-version: "3.11"
       - name: Validate SKILL.md frontmatter
         run: python .github/scripts/check-skills.py
+      # Offline only. The verifier can re-fetch pinned upstream commits with
+      # --remote, but a network hiccup must never turn a green build red; that
+      # mode is for bumping a skill, not for CI.
+      - name: Vendored skills match skills-lock.json
+        run: python scripts/verify-skills-lock.py
+      - name: Lock verifier self-test (must catch a tampered file)
+        run: python tests/test_skills_lock.py
 
   architecture:
     name: Architecture map matches the tree

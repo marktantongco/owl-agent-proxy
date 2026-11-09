@@ -1,41 +1,74 @@
 {
-  "version": 1,
+  "version": 2,
+  "about": "Provenance lock for vendored skills. Each entry pins the upstream commit and the sha256 of the file as vendored. Verify with `python scripts/verify-skills-lock.py` (CI gate); refresh with --update.",
+  "hashCaveat": "computedHash in version 1 of this file matched no upstream revision of any of these files and no normalisation of them, so it could not be verified at all. Version 2 records what sha256 actually covers.",
   "skills": {
     "free-search-aggregator": {
       "source": "vulcanusalex/free-search-aggregator",
       "sourceType": "github",
       "skillPath": "SKILL.md",
-      "computedHash": "db4fc8fe9962be0903e2e934a915d67a1979b20df14ffe1dd6f5f349a856bb48"
+      "upstreamCommit": "72526e7ea1bb21864915ea235fca257092fa4dd1",
+      "upstreamCommitDate": "2026-03-06",
+      "vendoredPath": ".agents/skills/free-search-aggregator/SKILL.md",
+      "contentHash": "sha256:4d7b834017bfa50742169b7e39125c9d858e54b25abb5daa71633433f8655edd",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed"
     },
-    "freeUnlimited-websearch": {
+    "freeunlimited-websearch": {
       "source": "lngu/openclaw-skill-freeunlimited-websearch",
       "sourceType": "github",
       "skillPath": "SKILL.md",
-      "computedHash": "1f7e961412bebe5dc27fab9a8879ab6ef95a2fbc777bed7ff24860a35c62d479"
+      "upstreamCommit": "279115c64bd156fcbc1acce164967b8766ec7921",
+      "upstreamCommitDate": "2026-02-21",
+      "vendoredPath": ".agents/skills/freeunlimited-websearch/SKILL.md",
+      "contentHash": "sha256:57d884009070b8b7a5315dc61ad8c9b1b01d6eca5629f10a4f7d4099d7b3eefa",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed",
+      "localModification": "frontmatter `name:` normalised to lowercase kebab-case (freeUnlimited-websearch -> freeunlimited-websearch) to satisfy the skills CLI naming contract; body is byte-identical to upstream. Any other difference is a verifier failure."
     },
     "github-research": {
       "source": "lingzhi227/agent-research-skills",
       "sourceType": "github",
       "skillPath": "skills/github-research/SKILL.md",
-      "computedHash": "e2fc4df5a6cbbf008732a416a8bb7103c8986d9b83f78fa1ea3296f8259ab8e0"
+      "upstreamCommit": "4e5f1176a11ae5d34db7921852243f35146e8857",
+      "upstreamCommitDate": "2026-02-23",
+      "vendoredPath": ".agents/skills/github-research/SKILL.md",
+      "contentHash": "sha256:d59a0cf56d97f23f9b94d6c0ac59a8ba63276b4e62626772691e35119e3504a8",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed"
     },
     "parallel-deep-research": {
       "source": "parallel-web/parallel-agent-skills",
       "sourceType": "github",
       "skillPath": "skills/parallel-deep-research/SKILL.md",
-      "computedHash": "f8d7f91c855f5730ca3912c16f414b5064ad99be6b254570841fea06cc6ff5ed"
+      "upstreamCommit": "8fc1fc426e7988f63b635f2ad40bedc54d0cbb34",
+      "upstreamCommitDate": "2026-09-25",
+      "vendoredPath": ".agents/skills/parallel-deep-research/SKILL.md",
+      "contentHash": "sha256:6d3523c233da02ecff3391f590ca3d61e345abebaad6026dd77d751fe3b7be10",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed"
     },
     "parallel-findall": {
       "source": "parallel-web/parallel-agent-skills",
       "sourceType": "github",
       "skillPath": "skills/parallel-findall/SKILL.md",
-      "computedHash": "779785f4d42f7045c8e713adf32d3f3e3a36f22a41915b54619695d3886b387c"
+      "upstreamCommit": "8fc1fc426e7988f63b635f2ad40bedc54d0cbb34",
+      "upstreamCommitDate": "2026-09-25",
+      "vendoredPath": ".agents/skills/parallel-findall/SKILL.md",
+      "contentHash": "sha256:52ba700d8703c5c69fea808e3a17baf5890d574e769be7167ba4310abbeed427",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed"
     },
     "you-web": {
       "source": "youdotcom-oss/agent-skills",
       "sourceType": "github",
       "skillPath": "skills/you-web/SKILL.md",
-      "computedHash": "e04ce511db02754536c10fb8d85d2cb36772d8c6ae030baea291e58ce9ecd08e"
+      "upstreamCommit": "a1f31724de26fd6b5bb65d213a92e4a2b1c3ee7d",
+      "upstreamCommitDate": "2026-09-30",
+      "vendoredPath": ".agents/skills/you-web/SKILL.md",
+      "contentHash": "sha256:aa84b1e84381615ce14ca7ddf00530cb5f6e3b549bb9c8c8a496a1fe45f1bb9f",
+      "contentHashAlgorithm": "sha256",
+      "contentHashCovers": "raw file bytes of vendoredPath, exactly as committed"
     }
   }
 }
