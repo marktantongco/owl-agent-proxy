@@ -8,11 +8,11 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 507 offline tests.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 580 offline tests.
 
 `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy on a configurable port, forwarding to upstream targets with protocol escalation (http/1.1 → http/2 → ja3 → websocket → browser → stealth), circuit breaker, and health-aware load balancing.
 
-**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (507 passing), not the prose.
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (580 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not the prose.
 
 **Operating Instructions:** smp5.4pd.md (Tactical Merge) — Mode: 🐜 Systematic
 
@@ -22,7 +22,9 @@
 
 The skills framework maps every job type (bug fix, feature, security, performance, docs, incident, refactor, dependency, architecture, full delivery) through a 6-stage pipeline: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**.
 
-26 skills are installed at `~/.agents/skills/` (16 original + 10 research/conceptual). 10 conceptual skill SKILL.md stubs are in `skills/`.
+30 skills are discoverable in `skills/` and pass `check-skills.py`: 6 vendored research skills
+(symlinked into `.agents/skills/`), 16 published skills, and 8 reasoning skills migrated
+from flat `skills/system/*.md` + `skills/development/*.md` files into `skills/<name>/SKILL.md`.
 
 ---
 
@@ -31,15 +33,15 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 | # | Pipeline | Trigger | DEFINE | PLAN | BUILD | VERIFY | REVIEW | SHIP |
 |---|----------|---------|--------|------|-------|--------|--------|------|
 | 1 | Bug Fix | Something is broken | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 2 | Feature Development | You want something new | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 2 | Feature Development | You want something new | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 3 | Security Fix | Something isn't safe | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 4 | Performance Optimization | It's too slow | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 5 | Documentation & Spec | People need to understand it | agent-skills, codemap, grill-with-docs | domain-modeling, to-spec, ponytail, ralph-prompt-multi-task, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 6 | Incident Response | Something big broke | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 7 | Refactoring | It's messy | agent-skills, codemap, grill-me, grilling | to-spec, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 7 | Refactoring | It's messy | agent-skills, codemap, grill-me, grilling | to-spec, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 8 | Dependency Update | Tools are old | agent-skills, codemap, agent-browser, find-skills | headroom | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 9 | Architecture Review | You're changing the design | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 10 | Full Product Delivery | You're making something from scratch | agent-skills, codemap, grill-powers | ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, subagent-driven-development, parallel-agent-skills, systematic-debugging | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | agent-run, finishing-a-development-branch |
+| 9 | Architecture Review | You're changing the design | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 10 | Full Product Delivery | You're making something from scratch | agent-skills, codemap, grill-powers | ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, caveman | writing-plans, executing-plans, subagent-driven-development, parallel-agent-skills, systematic-debugging | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | agent-run, finishing-a-development-branch |
 
 ---
 
@@ -53,7 +55,7 @@ The skills framework maps every job type (bug fix, feature, security, performanc
 | 4 | `orchestrate` | PLAN | Meta-orchestrate multi-agent workflow across all pipeline stages |
 | 5 | `chain-of-thought` | PLAN | Step-by-step reasoning for architecture decisions and trade-off analysis |
 | 6 | `headroom` | PLAN | Assess capacity, constraints, resource availability before build |
-| 7 | `Caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
+| 7 | `caveman` | PLAN | Simplest solution first — prevent over-engineering during design |
 | 8 | `parallel-agent-skills` | BUILD | Execute multiple agent skills in parallel during implementation |
 | 9 | `devils-advocate` | REVIEW | Challenge assumptions, identify failure modes, stress-test before commit |
 | 10 | `impeccable` | REVIEW | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
@@ -136,7 +138,7 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 | orchestrate | Custom stub (`skills/orchestrate/`) | PLAN |
 | chain-of-thought | Custom stub (`skills/chain-of-thought/`) | PLAN |
 | headroom | Custom stub (`skills/headroom/`) | PLAN |
-| Caveman | Custom stub (`skills/Caveman/`) | PLAN |
+| caveman | Custom stub (`skills/caveman/`) | PLAN |
 | parallel-agent-skills | Custom stub (`skills/parallel-agent-skills/`) | BUILD |
 | devils-advocate | Custom stub (`skills/devils-advocate/`) | REVIEW |
 | impeccable | Custom stub (`skills/impeccable/`) | REVIEW |

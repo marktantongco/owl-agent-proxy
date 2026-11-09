@@ -780,7 +780,7 @@ npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --a
 ls skills/*/SKILL.md
 ```
 
-Expected 14 stubs: `agent-skills`, `codemap`, `meta-skill`, `agent-reach`, `duckduckgo-search`, `exa-web-search-free`, `ralph-prompt-multi-task`, `orchestrate`, `chain-of-thought`, `headroom`, `Caveman`, `parallel-agent-skills`, `devils-advocate`, `impeccable`.
+Expected 14 stubs: `agent-skills`, `codemap`, `meta-skill`, `agent-reach`, `duckduckgo-search`, `exa-web-search-free`, `ralph-prompt-multi-task`, `orchestrate`, `chain-of-thought`, `headroom`, `caveman`, `parallel-agent-skills`, `devils-advocate`, `impeccable`.
 
 ### Step 14: Install Governed Token Plane Gateway Dependencies
 
@@ -1537,19 +1537,20 @@ Config precedence: explicit argument → `config.json` → built-in default.
 
 | Check | Result |
 |-------|--------|
-| Test suite (`pytest tests/ -q`) | **571 passed, 0 failed, 82% coverage** |
-| Gateway tests (`tests/test_gateway.py`) | **23 passed, 0 failed** (auth, circuit breaker, cache, billing, router, integration) |
-| Free catalog tests (`tests/test_free_catalog.py`) | **23 passed, 0 failed** (1 skipped) (catalog loading, routes, rate limits, paid vendor filter) |
+| Test suite (`pytest tests/ -q`) | **580 passed, 0 failed, 82% coverage** |
+| Gateway tests (`tests/test_gateway.py`) | **22 passed, 0 failed** (auth, circuit breaker, cache, billing, router, integration) |
+| Free catalog tests (`tests/test_free_catalog.py`) | **24 passed, 0 failed** (1 skipped) (catalog loading, routes, rate limits, paid vendor filter) |
 | Reverse proxy tests (`tests/test_reverse_proxy.py`) | **41 passed, 0 failed** (19 stealth mode tests) |
-| Stealth tests (`tests/test_stealth.py`) | **19 passed, 0 failed** |
-| V71 integration tests (`tests/test_v71_integration.py`) | **44 passed, 0 failed** |
+| Stealth tests (`tests/test_stealth.py`) | **23 passed, 0 failed** |
+| V71 integration tests (`tests/test_v71_integration.py`) | **40 passed, 0 failed** |
+| Architecture drift check (`scripts/gen-architecture.py --check`) | **OK — map matches the tree, 0 upward edges, 0 cycles** |
 | verify-install.py | **18 PASS, 0 FAIL, 2 SKIP** |
 | Harvester persistence test | **PASSED** (save → reload → state restored) |
 | Vendored import test | **PASSED** (imports from `~/.owl-agent/`) |
 | Audit verification script (`scripts/audit-verify.sh`) | **6/6 checks PASSED, 0 failures** |
 
-**Total source lines**: 2,351 (proxy_defense.py: 1,285, proxy_harvester.py: 545) + gateway/ (~3,400 lines including free_catalog/)
-**Uncovered lines**: 418 (18%)
+**Total source lines**: 2,360 (proxy_defense.py: 1,294, proxy_harvester.py: 545) + gateway/ (~3,400 lines including free_catalog/)
+**Uncovered lines**: 420 (18%)
 
 ---
 
@@ -1641,7 +1642,7 @@ Config precedence: explicit argument → `config.json` → built-in default.
 | 8 | `orchestrate` | PLAN | `skills/orchestrate/` | Meta-orchestrate multi-agent workflow across all pipeline stages |
 | 9 | `chain-of-thought` | PLAN | `skills/chain-of-thought/` | Step-by-step reasoning for architecture decisions |
 | 10 | `headroom` | PLAN | `skills/headroom/` | Assess capacity, constraints, resource availability before build |
-| 11 | `Caveman` | PLAN | `skills/Caveman/` | Simplest solution first — prevent over-engineering during design |
+| 11 | `caveman` | PLAN | `skills/caveman/` | Simplest solution first — prevent over-engineering during design |
 | 12 | `parallel-agent-skills` | BUILD | `skills/parallel-agent-skills/` | Execute multiple agent skills in parallel during implementation |
 | 13 | `devils-advocate` | REVIEW | `skills/devils-advocate/` | Challenge assumptions, identify failure modes, stress-test before commit |
 | 14 | `impeccable` | REVIEW | `skills/impeccable/` | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
@@ -1657,15 +1658,15 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 | # | Pipeline | Trigger | DEFINE | PLAN | BUILD | VERIFY | REVIEW | SHIP |
 |---|----------|---------|--------|------|-------|--------|--------|------|
 | 1 | Bug Fix | Something is broken | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | finishing-a-development-branch | finishing-a-development-branch |
-| 2 | Feature Development | You want something new | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 2 | Feature Development | You want something new | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 3 | Security Fix | Something isn't safe | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 4 | Performance Optimization | It's too slow | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 5 | Documentation & Spec | People need to understand it | agent-skills, codemap, grill-with-docs | domain-modeling, to-spec, ponytail, ralph-prompt-multi-task, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 6 | Incident Response | Something big broke | triage, diagnosing-bugs | systematic-debugging | writing-plans, executing-plans | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 7 | Refactoring | It's messy | agent-skills, codemap, grill-me, grilling | to-spec, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 7 | Refactoring | It's messy | agent-skills, codemap, grill-me, grilling | to-spec, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
 | 8 | Dependency Update | Tools are old | agent-skills, codemap, agent-browser, find-skills | headroom | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 9 | Architecture Review | You're changing the design | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
-| 10 | Full Product Delivery | You're making something from scratch | agent-skills, codemap, grill-powers | ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, Caveman | writing-plans, executing-plans, subagent-driven-development, parallel-agent-skills, systematic-debugging | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | agent-run, finishing-a-development-branch |
+| 9 | Architecture Review | You're changing the design | agent-skills, codemap, grill-me, grilling | domain-modeling, to-spec, grill-powers, ralph-prompt-multi-task, chain-of-thought, headroom, caveman | writing-plans, executing-plans, parallel-agent-skills | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | finishing-a-development-branch |
+| 10 | Full Product Delivery | You're making something from scratch | agent-skills, codemap, grill-powers | ralph-prompt-multi-task, orchestrate, chain-of-thought, headroom, caveman | writing-plans, executing-plans, subagent-driven-development, parallel-agent-skills, systematic-debugging | verification-before-completion | devils-advocate, impeccable, finishing-a-development-branch | agent-run, finishing-a-development-branch |
 
 ### Decision Gates
 
@@ -1743,7 +1744,7 @@ Combines:
 | https://github.com/sundial-org/awesome-openclaw-skills | exa-web-search-free (2.8K installs) |
 | https://github.com/vercel-labs/skills | find-skills / meta-skill (17.9K installs, 404 for meta-skill) |
 | https://github.com/adaptationio/skrillz | ralph-prompt-multi-task |
-| https://github.com/JuliusBrussee/caveman | Caveman |
+| https://github.com/JuliusBrussee/caveman | caveman |
 | https://lobehub.com/skills/bidodev-devils-advocate-skill-devils-advocate | devils-advocate |
 | https://lobehub.com/skills/pluginagentmarketplace-custom-plugin-prompt-engineering-chain-of-thought | chain-of-thought |
 | https://skills.sh/trending | Skills leaderboard |

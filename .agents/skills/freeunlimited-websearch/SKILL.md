@@ -1,5 +1,5 @@
 ---
-name: freeUnlimited-websearch
+name: freeunlimited-websearch
 description: Free unlimited web search using DuckDuckGo. No API key required.
 ---
 

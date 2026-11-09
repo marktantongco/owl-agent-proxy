@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
-[![Tests](https://img.shields.io/badge/tests-484%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-580%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -114,8 +114,8 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 484 passing, 0 failed |
-| Coverage | ~50% | 83% (proxy_defense 82%, mcp_proxy_server 86%, proxy_harvester 81%) |
+| Tests | 9 | 580 passing, 0 failed |
+| Coverage | ~50% | 82% (proxy_defense 83%, mcp_proxy_server 86%, proxy_harvester 78%) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
 | Rate-limit persistence | in-memory only | `token_buckets.json` — state survives restart via `TokenBucket.to_dict()`/`from_dict()`, debounced save every 10 acquires, final persist on `close()` |
 | Config validation | `dict.get()` with defaults | `CONFIG_SCHEMA` (21 keys) + `validate_config()` — invalid values logged as warnings, unknown keys forward-compatible |
@@ -612,7 +612,7 @@ Run the same checks by hand:
 
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
-python -m pytest -q                                 # 484 tests
+python -m pytest -q                                 # 580 tests
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -629,7 +629,7 @@ python mcp_proxy_server.py --selftest               # MCP protocol
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                       # 407 tests, offline + hermetic
+python -m pytest -q                       # 580 tests, offline + hermetic
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -655,12 +655,12 @@ covered by the installer's V19/V20 checks, which SKIP without network.
 
 | Metric | Value |
 |--------|-------|
-| Tests passed | 484 |
+| Tests passed | 580 |
 | Tests failed | 0 |
-| Coverage | 83% |
-| proxy_defense.py | 82% |
+| Coverage | 82% |
+| proxy_defense.py | 83% |
 | mcp_proxy_server.py | 86% |
-| proxy_harvester.py | 81% |
+| proxy_harvester.py | 78% |
 
 ---
 
@@ -668,60 +668,81 @@ covered by the installer's V19/V20 checks, which SKIP without network.
 
 ```
 owl-agent-proxy/
-├── install-owl.sh                # v7.1 installer (idempotent, backs up, verifies)
-├── proxy_defense.py              # Defense stack: cache, dedupe, rate limit, pool, protocols, middleware, filter, LLM routing
-├── proxy_harvester.py            # Upstream harvest, honeypot detector, session affinity
-├── mcp_proxy_server.py           # MCP server (stdlib stdio JSON-RPC, 4 tools)
-├── requirements.txt              # Core deps only (aiohttp, aiofiles, httpx)
-├── requirements-dev.txt          # pytest + pytest-asyncio
-├── pytest.ini                    # Test config (async mode, testpaths)
-├── pyproject.toml                # Build metadata + console scripts
-├── run.sh                        # CLI wrapper: stats, fetch, harvest, mcp-selftest, verify
-├── LICENSE                       # MIT
+├── proxy_defense.py              # L2 egress core: cache, dedupe, rate limit, pool, protocols, filter, middleware, LLM routing
+├── proxy_harvester.py            # L1 supply: harvest, honeypot detector, session affinity, validate_proxy
+├── reverse_proxy.py              # L3 ingress (optional): HTTP ingress + escalation ladder + circuit breaker
+├── mcp_proxy_server.py           # L4 agent surface: stdio JSON-RPC, 4 tools + memory/pool backends
+├── gateway/                      # L3 token plane (FastAPI, :20128): never ships with the library
+│   ├── app.py                    #   routes, provider calls, request lifecycle
+│   ├── auth.py                   #   bearer gateway token (clients never hold provider keys)
+│   ├── router.py                 #   free catalog → paid → local fallback chain
+│   ├── billing.py                #   token/cost budgets per client
+│   ├── cache.py                  #   Redis-backed response cache (degrades off without redis)
+│   ├── circuit_breaker.py        #   per-provider breaker
+│   ├── audit.py                  #   redacted audit log
+│   └── free_catalog/             #   vendored tier-1 provider catalog (providers.json, offline)
 ├── config/
+│   ├── config.json               # Runtime defaults (every key optional)
+│   ├── opencode.json             # OpenCode plugin config
 │   ├── AGENTS.md                 # Agent system prompt
-│   ├── opencode.json             # OpenCode plugin configuration
-│   ├── config.json               # Runtime config defaults (all keys optional)
 │   ├── proxy_pool.template.json  # Proxy pool template (copy to use)
-│   └── external_proxies.template.json  # External proxy URLs (BounceBack/https_proxy)
+│   └── external_proxies.template.json
 ├── docs/
+│   ├── architecture/
+│   │   ├── MODULE_GRAPH.md       # GENERATED from the tree — layers, AST import graph, cycles
+│   │   └── RESTRUCTURE_PLAN.md   # Audit → optimize plan this layout came from
 │   ├── MCP_INTEGRATION.md        # Per-host MCP wiring + tool reference
 │   ├── V7_UPSTREAM.md            # Harvesting, honeypot, sticky sessions, runbook
-│   ├── PROTOCOL_ESCALATION_GUIDE.md  # When and how to escalate protocols
+│   ├── PROTOCOL_ESCALATION_GUIDE.md
 │   ├── STEALTH_BROWSER.md        # Stealth rung (optional extra, Python 3.11+)
-│   └── LAYERED_FALLBACK.md           # Fallback architecture and resilience
-├── examples/
-│   └── usage.py                  # Usage examples for all protocols
-├── packaging/
-│   ├── PKGBUILD                  # Arch / omArchy package
-│   └── make-source.sh            # tarball from an exact commit
+│   ├── LAYERED_FALLBACK.md
+│   ├── skills-framework/         # 10 end-to-end pipelines + quick reference
+│   └── agents/                   # Domain notes, issue tracker, grill-engineering
+├── skills/                       # 30 discoverable skills, each skills/<name>/SKILL.md
+│   ├── owl-proxy/                #   install + operate the stack
+│   ├── owl-proxy-mcp/            #   wire the MCP server into an agent host
+│   ├── research/ brainstorm/ compare-a-b/ decision-tree/ simulator/
+│   ├── code-generation/ audit-optimizer/ explain-analyzer/
+│   └── free-search-aggregator/ github-research/ parallel-findall/ ...  (vendored, symlinked into .agents/ and .claude/)
+├── .agents/skills/               # Canonical location the skill CLIs read
+├── .claude/skills/               # Symlinks → ../../.agents/skills/<name>
 ├── scripts/
+│   ├── gen-architecture.py       # Writes/verifies MODULE_GRAPH.md (CI gate: --check)
+│   ├── verify-install.py         # V1–V20 install verification
 │   ├── install-ubuntu.sh         # Ubuntu system install (apt + phases)
-│   ├── install-arch.sh           # Arch / omArchy system install (pacman + install-owl.sh)
-│   ├── smoke-stealth.py          # Live stealth-rung check (needs real networking)
-│   └── verify-install.py         # V1–V20 install verification
-├── skills/
-│   ├── development/
-│   │   └── code-generation.md    # Code generation skill
-│   └── system/
-│       ├── audit-optimizer.md    # Performance audit skill
-│       ├── brainstorm.md         # Divergent thinking skill
-│       ├── compare-a-b.md        # A/B comparison skill
-│       ├── decision-tree.md      # Decision tree skill
-│       ├── explain-analyzer.md   # SQL EXPLAIN skill
-│       ├── research.md           # Research skill
-│       └── simulator.md          # Interaction tracing skill
-├── tests/
-│   ├── conftest.py               # Blocks outbound sockets (hermetic tests)
-│   ├── test_proxy_defense.py     # Core stack unit tests
-│   ├── test_proxy_harvester.py   # Harvester / affinity / honeypot (offline)
-│   ├── test_v71_integration.py   # Pool + client integration (offline)
-│   └── test_mcp_server.py        # MCP protocol + stdio subprocess
-└── .github/
-    ├── scripts/
-    │   └── ci-check.sh           # Escalation + credential guard
-    └── workflows/
-        └── protocol-check.yml    # guard + pytest (3.10–3.12) + installer smoke
+│   ├── install-arch.sh           # Arch / omArchy system install
+│   └── smoke-stealth.py          # Live stealth-rung check (needs real networking)
+├── tests/                        # 580 tests, all offline + hermetic
+│   ├── conftest.py               #   blocks outbound sockets (loopback excepted)
+│   ├── test_proxy_defense.py     #   182
+│   ├── test_mcp_server.py        #   118
+│   ├── test_proxy_harvester.py   #   70
+│   ├── test_memory_backend.py    #   46
+│   ├── test_reverse_proxy.py     #   41
+│   ├── test_v71_integration.py   #   40
+│   ├── test_free_catalog.py      #   24
+│   ├── test_stealth.py           #   23
+│   ├── test_gateway.py           #   22
+│   ├── test_pool_backend.py      #   8
+│   └── test_architecture_check.py#   6   (proves the drift detector detects)
+├── examples/usage.py             # Usage examples for all protocols
+├── packaging/                    # PKGBUILD + make-source.sh
+├── tools/grill-engineering/      # Review lens used by the pipelines
+├── .github/
+│   ├── scripts/
+│   │   ├── ci-check.sh           #   escalation + credential guard
+│   │   ├── check-skills.py       #   SKILL.md contract (fails CI on regression)
+│   │   └── check-swallows.py     #   no silent broad excepts
+│   └── workflows/protocol-check.yml   # guards + architecture + pytest (3.10–3.12) + installer
+├── install-owl.sh                # v7.1 installer (idempotent, backs up, verifies)
+├── run.sh                        # CLI wrapper: stats, fetch, harvest, mcp-selftest, verify
+├── requirements.txt              # Core deps only (httpx[socks], aiohttp, aiofiles)
+├── requirements-dev.txt          # + pytest, fastapi (gateway tests)
+├── pyproject.toml                # Build metadata + console scripts
+├── pytest.ini                    # Async mode, testpaths, coverage on shipped modules
+├── docker-compose.yml            # gateway + Redis + Ollama
+├── nginx.conf / Caddyfile        # Edge TLS + rate limiting
+└── LICENSE                       # MIT
 ```
 
 ---
@@ -785,22 +806,38 @@ python .github/scripts/check-skills.py                          # validate packa
 The `skills` CI job fails the build on a malformed or undiscoverable skill, so
 packaging cannot regress as skills are added.
 
-### Legacy prompt files (not discoverable — migration pending)
+### Reasoning skills (migrated from flat prompt files)
 
-These carry useful prompt content but have no frontmatter, so `skills add` finds
-**0** skills in this directory today. They are slated for migration to
-`skills/<name>/SKILL.md`.
+These eight used to be flat `skills/system/*.md` files with no frontmatter,
+which `skills add` silently ignored — the directory advertised skills that no
+agent could discover. They are now `skills/<name>/SKILL.md` and are counted by
+`check-skills.py` (30 skills valid, 0 flat files pending). None of them are
+vendored from a third party, so unlike the research skills below they are real
+files in `skills/` rather than symlinks into `.agents/skills/`.
 
-| Skill | Purpose | Trigger |
-|-------|---------|---------|
-| `code-generation` | Production-grade code with tests | Building features, refactoring |
-| `audit-optimizer` | Profile → diagnose → fix loops | Performance issues |
-| `brainstorm` | Divergent thinking, alternatives | Stuck on single-path solution |
-| `compare-a-b` | Weighted A/B comparison | Choosing between options |
-| `decision-tree` | Branching logic maps | Routing decisions |
-| `explain-analyzer` | SQL EXPLAIN interpretation | Slow database queries |
-| `research` | Deep-dive with source validation | Before build decisions |
-| `simulator` | End-to-end interaction tracing | Building UI, APIs, workflows |
+| Skill | Stage | Purpose | Trigger |
+|-------|-------|---------|---------|
+| `code-generation` | BUILD | Production-grade code with tests, no placeholders | Building features, refactoring |
+| `audit-optimizer` | VERIFY | Baseline → one change → re-measure | Performance issues |
+| `brainstorm` | PLAN | Divergent thinking, constraint relaxation | Stuck on single-path solution |
+| `compare-a-b` | PLAN | Weighted A/B comparison with the arithmetic shown | Choosing between options |
+| `decision-tree` | PLAN | Branching logic maps, every leaf has an action | Routing decisions |
+| `explain-analyzer` | VERIFY | SQL EXPLAIN ANALYZE interpretation | Slow database queries |
+| `research` | DEFINE | Deep-dive with two-source validation | Before build decisions |
+| `simulator` | PLAN | Interaction tracing incl. error + recovery paths | Building UI, APIs, workflows |
+
+### Architecture map (generated, not written)
+
+`docs/architecture/MODULE_GRAPH.md` is produced by `scripts/gen-architecture.py`
+from the **AST import graph**, not from prose. It lists the four layers, every
+first-party edge with a rationale, any upward edge or import cycle, and each
+module's size. CI runs it with `--check`, so the documented layers cannot drift
+from the tree again.
+
+```bash
+python scripts/gen-architecture.py            # regenerate
+python scripts/gen-architecture.py --check    # what CI runs (fails when stale)
+```
 
 ---
 

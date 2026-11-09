@@ -463,8 +463,9 @@ class StealthClient:
             domain = _up(url).netloc
             if domain and cookies:
                 self._cookies[domain] = dict(cookies)
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:  # swallow: cookie bookkeeping must never break
+            # a request; a relative or malformed URL just has no domain to key.
+            logger.debug("could not store cookies for %r: %s", url, exc)  # pragma: no cover
 
     def _jitter_delay(self) -> float:
         """Return the configured jitter delay in seconds (for callers to await)."""

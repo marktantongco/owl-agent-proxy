@@ -36,6 +36,33 @@ check_protocol_escalation() {
         local context
         context=$(sed -n "$((lineno-5)),$((lineno-1))p" "$file" 2>/dev/null || true)
 
+        # Bookkeeping exemption. A protocol name may legitimately appear without
+        # escalating anything: as a cache key, a dataclass field, or inside a
+        # handler that already carries its own justification comment. What must
+        # justify itself is a *call site* that selects a protocol without a
+        # preceding rationale.
+        #
+        # 1. Cache keys / cache lookups: the string never reaches the network.
+        # 2. Data construction (CachedResponse(..., protocol=...)) where the
+        #    enclosing handler is already justified within the same context.
+        if echo "$line" | grep -qE 'cache\.(get|set)\(|CacheKey'; then
+            log_ok "$file:$lineno — bookkeeping (cache key), not an escalation"
+            continue
+        fi
+        if echo "$line" | grep -q 'CachedResponse' \
+           && echo "$context" | grep -qiE 'APPROVED|baseline'; then
+            log_ok "$file:$lineno — data literal inside an already-justified handler"
+            continue
+        fi
+        # 3. Explicit opt-out, same idiom as check-swallows.py's `# swallow:`.
+        #    For a call site where naming a protocol escalates nothing, say why
+        #    on the line: `# no-escalation: <reason>`.
+        if echo "$line" | grep -q '# no-escalation:' \
+           || echo "$context" | grep -q '# no-escalation:'; then
+            log_ok "$file:$lineno — opted out inline"
+            continue
+        fi
+
         local score=0
         echo "$context" | grep -qiE 'http/1\.1|http1|baseline' && score=$((score + 1))
         echo "$context" | grep -qiE 'cloudflare|datadome|akamai|anti.bot' && score=$((score + 1))
