@@ -152,18 +152,30 @@ def render_tests() -> str:
 
 
 def _collect_counts(files: list[Path]) -> dict[str, int]:
-    """Ask pytest how many tests each file collects, without importing them."""
+    """Ask pytest how many tests each file collects, without importing them.
+
+    `-o addopts=` overrides pytest.ini. Without it the repo's `--cov=` options are
+    applied, and a runner that has pytest but not pytest-cov exits with a usage
+    error — which this function used to swallow into a `?` in the table. A count
+    that cannot be determined is an error here, not a symbol: a silently degraded
+    table is the failure this whole script exists to prevent.
+    """
     import subprocess
 
     counts: dict[str, int] = {}
     for path in files:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", str(path), "-q", "--collect-only", "-p", "no:cacheprovider"],
+            [sys.executable, "-m", "pytest", str(path), "-q", "--collect-only",
+             "-p", "no:cacheprovider", "-o", "addopts="],
             capture_output=True, text=True, cwd=ROOT,
         )
         match = re.search(r"(\d+) tests? collected", proc.stdout)
-        if match:
-            counts[path.name] = int(match.group(1))
+        if not match:
+            raise SystemExit(
+                f"could not count tests in {path.name} (pytest exit {proc.returncode}):\n"
+                f"{(proc.stderr or proc.stdout).strip()[-600:]}"
+            )
+        counts[path.name] = int(match.group(1))
     return counts
 
 

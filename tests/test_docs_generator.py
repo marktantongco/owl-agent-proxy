@@ -109,6 +109,21 @@ def test_catalog_counts_come_from_the_file_not_from_prose() -> None:
     assert "2 providers, 4 models" in rendered, rendered
 
 
+def test_collect_counts_fails_loudly_instead_of_returning_question_marks() -> None:
+    """A degraded count must raise, not render `?` into the committed table.
+
+    The CI job installs pytest but pytest.ini requires --cov. Without pytest-cov
+    pytest exits with a usage error; the generator used to swallow that into a
+    `?` for every file and then compare the degraded table against the real one.
+    `-o addopts=` must neutralise the ini file. This test asserts the count is a
+    real number for every test file, not the `?` fallback.
+    """
+    files = sorted((REPO_ROOT / "tests").glob("test_*.py"))
+    counts = gen._collect_counts(files)
+    assert set(counts) == {p.name for p in files}, "a test file produced no count"
+    assert all(isinstance(n, int) and n > 0 for n in counts.values()), counts
+
+
 def test_rewrite_keeps_text_outside_the_markers() -> None:
     text = (
         "before prose\n\n"
