@@ -1535,119 +1535,114 @@ Config precedence: explicit argument → `config.json` → built-in default.
 
 ## Test Results & Verification
 
+Counts are collected by `python scripts/gen-docs.py`; the installer checks are
+run separately by `scripts/verify-install.py`.
+
+<!-- generated:tests (counts from pytest --collect-only; run `python scripts/gen-docs.py`) -->
+
+| Test file | Tests | Covers |
+|-----------|-------|--------|
+| `tests/test_architecture_check.py` | 6 | the drift detector itself (proves it detects) |
+| `tests/test_docs_generator.py` | 7 | the table generator (proves a stale table fails) |
+| `tests/test_free_catalog.py` | 24 | catalog loading, routes, paid-vendor filter |
+| `tests/test_gateway.py` | 22 | auth, circuit breaker, cache, billing, router |
+| `tests/test_mcp_server.py` | 118 | JSON-RPC framing, all tools, stdout purity, real stdio subprocess |
+| `tests/test_memory_backend.py` | 46 | SQLite memory backend, FTS, cross-process lock |
+| `tests/test_pool_backend.py` | 8 | pool persistence backend |
+| `tests/test_proxy_defense.py` | 182 | cache, dedupe, rate limit, rotation, filter pipeline, middleware, protocols |
+| `tests/test_proxy_harvester.py` | 70 | source schemas, source health, affinity, honeypot hashing, probes |
+| `tests/test_reverse_proxy.py` | 41 | ingress, circuit breaker, load balancing, stealth mode |
+| `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
+| `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
+
+**Total: 587 tests**, all offline and hermetic.
+
+<!-- /generated:tests -->
+
+Additional checks (not pytest):
+
 | Check | Result |
 |-------|--------|
-| Test suite (`pytest tests/ -q`) | **580 passed, 0 failed, 82% coverage** |
-| Gateway tests (`tests/test_gateway.py`) | **22 passed, 0 failed** (auth, circuit breaker, cache, billing, router, integration) |
-| Free catalog tests (`tests/test_free_catalog.py`) | **24 passed, 0 failed** (1 skipped) (catalog loading, routes, rate limits, paid vendor filter) |
-| Reverse proxy tests (`tests/test_reverse_proxy.py`) | **41 passed, 0 failed** (19 stealth mode tests) |
-| Stealth tests (`tests/test_stealth.py`) | **23 passed, 0 failed** |
-| V71 integration tests (`tests/test_v71_integration.py`) | **40 passed, 0 failed** |
-| Architecture drift check (`scripts/gen-architecture.py --check`) | **OK — map matches the tree, 0 upward edges, 0 cycles** |
-| verify-install.py | **18 PASS, 0 FAIL, 2 SKIP** |
-| Harvester persistence test | **PASSED** (save → reload → state restored) |
-| Vendored import test | **PASSED** (imports from `~/.owl-agent/`) |
-| Audit verification script (`scripts/audit-verify.sh`) | **6/6 checks PASSED, 0 failures** |
-
-**Total source lines**: 2,360 (proxy_defense.py: 1,294, proxy_harvester.py: 545) + gateway/ (~3,400 lines including free_catalog/)
-**Uncovered lines**: 420 (18%)
-
----
+| `scripts/gen-architecture.py --check` | OK — map matches the tree, 0 upward edges, 0 cycles |
+| `scripts/gen-docs.py --check` | OK — this page's generated blocks match their sources |
+| `verify-install.py --no-live` | 18 PASS, 0 FAIL, 2 SKIP |
+| `mcp_proxy_server.py --selftest` | OK — initialize, tools/list, resources/list, -32601, ping |
+| `scripts/audit-verify.sh` | 6/6 checks PASSED |
 
 ## Skills Inventory (All Installed Skills)
 
-### Core Skills (~/.agents/skills/)
+Generated from `skills/*/SKILL.md` frontmatter and the vendored sources. The
+directory listing and this table cannot disagree, because CI runs
+`python scripts/gen-docs.py --check`.
 
-| Skill | Source | Pipeline Stage |
-|-------|--------|---------------|
-| triage | mattpocock/skills | DEFINE |
-| diagnosing-bugs | mattpocock/skills | DEFINE |
-| grill-with-docs | mattpocock/skills | PLAN |
-| grilling | mattpocock/skills | PLAN |
-| domain-modeling | mattpocock/skills | PLAN |
-| to-spec | mattpocock/skills | PLAN |
-| ponytail | DietrichGebert/ponytail | PLAN |
-| grill-with-tail | andre-lmarinho/grillwith-tail | PLAN |
-| grill-powers | okht/grill-powers | PLAN/SHIP |
-| writing-plans | hazikkhatri/superpowers | BUILD |
-| subagent-driven-development | hazikkhatri/superpowers | BUILD |
-| executing-plans | hazikkhatri/superpowers | BUILD |
-| systematic-debugging | hazikkhatri/superpowers | BUILD/VERIFY |
-| verification-before-completion | hazikkhatri/superpowers | VERIFY |
-| finishing-a-development-branch | hazikkhatri/superpowers | REVIEW/SHIP |
-| agent-run | GRD-Chang/grill-engineering | SHIP |
+<!-- generated:skills (30 skills in skills/, each skills/<name>/SKILL.md) -->
 
-### Research Skills (installed via `npx skills add`)
+| Skill | Stage | Source |
+|-------|-------|--------|
+| `agent-reach` | DEFINE | panniantong/agent-reach |
+| `agent-skills` | DEFINE | not declared in SKILL.md |
+| `audit-optimizer` | VERIFY | owl-agent-proxy (migrated from a flat prompt file) |
+| `brainstorm` | PLAN | owl-agent-proxy (migrated from a flat prompt file) |
+| `caveman` | PLAN | JuliusBrussee/caveman |
+| `chain-of-thought` | PLAN | Multiple implementations (lobehub, Wei 2022 framework, WebCOT) |
+| `code-generation` | BUILD | owl-agent-proxy (migrated from a flat prompt file) |
+| `codemap` | DEFINE | not declared in SKILL.md |
+| `compare-a-b` | PLAN | owl-agent-proxy (migrated from a flat prompt file) |
+| `decision-tree` | PLAN | owl-agent-proxy (migrated from a flat prompt file) |
+| `devils-advocate` | REVIEW | Multiple implementations (lobehub/bidodev, Cold-IQ, richiethomas) |
+| `duckduckgo-search` | DEFINE | nousresearch/hermes-agent or openclaw/skills |
+| `exa-web-search-free` | DEFINE | sundial-org/awesome-openclaw-skills |
+| `explain-analyzer` | VERIFY | owl-agent-proxy (migrated from a flat prompt file) |
+| `free-search-aggregator` | DEFINE | not declared in SKILL.md |
+| `freeunlimited-websearch` | DEFINE | not declared in SKILL.md |
+| `github-research` | DEFINE | not declared in SKILL.md |
+| `headroom` | PLAN | not declared in SKILL.md |
+| `impeccable` | REVIEW | not declared in SKILL.md |
+| `meta-skill` | DEFINE | vercel-labs/skills |
+| `orchestrate` | PLAN | not declared in SKILL.md |
+| `owl-proxy` | SHIP | not declared in SKILL.md |
+| `owl-proxy-mcp` | SHIP | not declared in SKILL.md |
+| `parallel-agent-skills` | BUILD | not declared in SKILL.md |
+| `parallel-deep-research` | DEFINE | not declared in SKILL.md |
+| `parallel-findall` | DEFINE | not declared in SKILL.md |
+| `ralph-prompt-multi-task` | PLAN | adaptationio/skrillz |
+| `research` | DEFINE | owl-agent-proxy (migrated from a flat prompt file) |
+| `simulator` | PLAN | owl-agent-proxy (migrated from a flat prompt file) |
+| `you-web` | DEFINE | not declared in SKILL.md |
 
-| Skill | Source | Installs | Pipeline Stage |
-|-------|--------|----------|---------------|
-| parallel-deep-research | parallel-web/parallel-agent-skills | 14.3K | DEFINE |
-| parallel-findall | parallel-web/parallel-agent-skills | 14.3K | DEFINE |
-| github-research | lingzhi227/agent-research-skills | 31 skills | DEFINE |
-| free-search-aggregator | vulcanusalex/free-search-aggregator | 85 | DEFINE |
-| freeUnlimited-websearch | lngu/openclaw-skill-freeunlimited-websearch | 565 | DEFINE |
-| you-web | youdotcom-oss/agent-skills | 81 | DEFINE |
-
-### Governed Token Plane Skills (from plan)
-
-| Skill | Source | Pipeline Stage | Purpose |
-|-------|--------|---------------|---------|
-| find-skills | vercel-labs/skills | DEFINE | #1 meta-skill — discover/install other skills |
-| meta-skill | vercel-labs/skills | DEFINE | Conceptual — 404 on skills.sh, find-skills serves this role |
-| parallel-findall | parallel-web/parallel-agent-skills | DEFINE | Entity discovery — find providers/models matching criteria |
-| impeccable | pbakaus/impeccable | REVIEW | Quality framework: audit, critique, distill, adapt, optimize |
-| agent-browser | vercel-labs/agent-browser | DEFINE | Browser automation — stealth verification of gateway endpoints |
-| github-researcher | lingzhi227/agent-research-skills | DEFINE | GitHub repo triage — CVEs, staleness, maintenance |
-| brainstorming | obra/superpowers | PLAN | Structured ideation for gateway architecture |
-| writing-plans | obra/superpowers | PLAN | Detailed implementation plans with checkpoints |
-| systematic-debugging | obra/superpowers | BUILD/VERIFY | Hypothesis-driven debug loop for gateway issues |
-| deep-analysis | — | PLAN | Rate limit patterns, cost estimates, fallback ordering analysis |
-| deep-dive | — | PLAN/VERIFY | Provider-specific quirks (auth headers, streaming, error formats) |
-
-### Free Catalog Research (awesome-free-llm-apis)
-
-| Provider | Category | Models | Rate Limit | Enabled Default |
-|----------|----------|--------|------------|-----------------|
-| Aion Labs | provider_api | 4 | 15 RPM, 20K TPD | ✅ |
-| Cohere | provider_api | 11 | 1,000 calls/mo, 20 RPM | ✅ |
-| Google Gemini | provider_api | 8 | No published limits | ✅ |
-| Mistral AI | provider_api | 7 | ~1 RPS, 500K TPM | ✅ |
-| Z AI (Zhipu AI) | provider_api | 3 | 1 concurrent request | ❌ |
-| Cloudflare Workers AI | inference_provider | 7 named + 55 more | 10K neurons/day shared | ✅ |
-| Gonka Broker | inference_provider | 4 | ~1M tokens/month shared | ❌ |
-| Groq | inference_provider | 3 | 30 RPM, 1,000 RPD | ✅ |
-| Kilo Code | inference_provider | 10 | 200 req/hr | ✅ |
-| LLM7.io | inference_provider | 4 | 60 RPM, 250 req/hr | ✅ |
-| ModelScope | inference_provider | 2 named + more | 2,000 RPD total | ❌ |
-| NVIDIA NIM | inference_provider | 3 named + 92 more | 40 RPM, 10,000 RPD | ✅ |
-| OpenRouter | inference_provider | 11 free models | 20 RPM, 50 RPD | ✅ |
-| OVHcloud AI Endpoints | inference_provider | 9 | 2 RPM anonymous/IP | ✅ |
-| SiliconFlow | inference_provider | 2 | Identity verification | ❌ |
-
-### Conceptual Skills (14 stubs in `skills/`) — see next section.
+<!-- /generated:skills -->
 
 ---
 
-## Conceptual Skills (14 Stubs in `skills/`)
+## Free Catalog (generated from `gateway/free_catalog/providers.json`)
 
-| # | Skill | Stage | Source | Purpose |
-|---|-------|-------|--------|---------|
-| 1 | `agent-skills` | DEFINE | `skills/agent-skills/` | Discover/install/manage skills from skills.sh ecosystem |
-| 2 | `codemap` | DEFINE | `skills/codemap/` | Map codebase structure — modules, dependencies, entry points, boundaries |
-| 3 | `meta-skill` | DEFINE | `skills/meta-skill/` | Discover and install skills when capability is missing |
-| 4 | `agent-reach` | DEFINE | `skills/agent-reach/` | Read/search across web platforms (Twitter, Reddit, YouTube, GitHub) |
-| 5 | `duckduckgo-search` | DEFINE | `skills/duckduckgo-search/` | Free web search via DuckDuckGo — no API key |
-| 6 | `exa-web-search-free` | DEFINE | `skills/exa-web-search-free/` | Free AI neural search via Exa MCP — no API key |
-| 7 | `ralph-prompt-multi-task` | PLAN | `skills/ralph-prompt-multi-task/` | Generate phased prompts with sequential milestones |
-| 8 | `orchestrate` | PLAN | `skills/orchestrate/` | Meta-orchestrate multi-agent workflow across all pipeline stages |
-| 9 | `chain-of-thought` | PLAN | `skills/chain-of-thought/` | Step-by-step reasoning for architecture decisions |
-| 10 | `headroom` | PLAN | `skills/headroom/` | Assess capacity, constraints, resource availability before build |
-| 11 | `caveman` | PLAN | `skills/caveman/` | Simplest solution first — prevent over-engineering during design |
-| 12 | `parallel-agent-skills` | BUILD | `skills/parallel-agent-skills/` | Execute multiple agent skills in parallel during implementation |
-| 13 | `devils-advocate` | REVIEW | `skills/devils-advocate/` | Challenge assumptions, identify failure modes, stress-test before commit |
-| 14 | `impeccable` | REVIEW | `skills/impeccable/` | Quality framework: audit, critique, distill, adapt, optimize, delight, result |
+The catalog is vendored, so it works with no network. This table is generated
+from the file — do not edit it by hand, and do not restate counts in prose
+elsewhere.
 
-**Skill gaps (not published, custom stubs only):** `meta-skill` (vercel-labs/skills returned 404), `impeccable` (pbakaus/impeccable not found).
+<!-- generated:catalog (15 providers, 91 models, from gateway/free_catalog/providers.json) -->
+
+*Source: `marktantongco/awesome-free-llm-apis` — last updated 2026-10-25*
+
+| Provider | Category | Models | Example rate limit |
+|----------|----------|--------|--------------------|
+| Cloudflare Workers AI | inference_provider | 8 | 10K neurons/day (shared) |
+| Gonka Broker | inference_provider | 4 | ~1M tokens/month (shared, varies by model) |
+| Groq | inference_provider | 3 | 30 RPM, 1,000 RPD |
+| Kilo Code | inference_provider | 10 | 200 req/hr |
+| LLM7.io | inference_provider | 4 | 60 RPM, 250 req/hr (free token) |
+| ModelScope | inference_provider | 3 | 2,000 RPD total; <=500 RPD/model (dynamic) |
+| NVIDIA NIM | inference_provider | 4 | 40 RPM, 10,000 RPD |
+| OVHcloud AI Endpoints | inference_provider | 9 | 2 RPM (anonymous) |
+| OpenRouter | inference_provider | 11 | 20 RPM, 50 RPD |
+| SiliconFlow | inference_provider | 2 | — |
+| Aion Labs | provider_api | 4 | 15 RPM, 20K TPD |
+| Cohere | provider_api | 11 | 20 RPM |
+| Google Gemini | provider_api | 8 | — |
+| Mistral AI | provider_api | 7 | ~1 RPS, 500K TPM |
+| Z AI (Zhipu AI) | provider_api | 3 | 1 concurrent request |
+
+<!-- /generated:catalog -->
 
 ---
 

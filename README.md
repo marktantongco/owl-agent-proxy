@@ -839,6 +839,18 @@ python scripts/gen-architecture.py            # regenerate
 python scripts/gen-architecture.py --check    # what CI runs (fails when stale)
 ```
 
+`AGENTS.md`'s skills inventory, free-catalog table and test counts are generated
+the same way, from `skills/*/SKILL.md`, `gateway/free_catalog/providers.json` and
+`pytest --collect-only`:
+
+```bash
+python scripts/gen-docs.py            # regenerate
+python scripts/gen-docs.py --check    # what CI runs (fails when stale)
+```
+
+The post-merge review of the restructure, including the two findings left
+deliberately unfixed, is in [`docs/architecture/REVIEW_PR39.md`](docs/architecture/REVIEW_PR39.md).
+
 ---
 
 ## Limitations
