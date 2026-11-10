@@ -98,14 +98,14 @@
 |------|----------------|------------|-------------|------------|----------------------|
 | Binary/service starts without errors | ✅ | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked | ⚠️ blocked |
 | OWL can route traffic through it | ✅ (MCP tools) | ⚠️ config ready | ⚠️ config ready | ✅ (middleware) | N/A (patterns) |
-| Test suite still passes (178+) | ✅ 580 passed | N/A | N/A | N/A | N/A |
+| Test suite still passes (178+) | ✅ 598 passed | N/A | N/A | N/A | N/A |
 | No memory exhaustion on 3.8 GB RAM | ✅ | N/A | N/A | N/A | N/A |
 | No placeholder code; working implementations | ✅ | ✅ config + WAF patterns | ✅ config + nginx camouflage patterns | ✅ middleware ported | N/A |
 
 ## Stop Conditions
 
 - No toolchain install attempted (would exceed 500 MB or be blocked by SSL)
-- OWL test suite: 580 passing (well above 178 minimum)
+- OWL test suite: 598 passing (well above 178 minimum)
 - No autologin/autoclaw, glm/z.ai, or ai-gateway-complete (all explicitly rejected)
 
 ## Files Created/Modified

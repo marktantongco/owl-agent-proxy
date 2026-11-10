@@ -24,7 +24,7 @@ justify it in `EDGE_NOTES`, not just in this description.**
 
 ## Checklist
 
-- [ ] `python -m pytest -q` passes (currently 587)
+- [ ] `python -m pytest -q` passes (see the tests badge at the top of the README — do not hardcode a count here)
 - [ ] `python scripts/gen-architecture.py --check` passes — regenerate if you changed imports
 - [ ] `python scripts/gen-docs.py --check` passes — regenerate if you added a skill, a test file, or a catalog provider
 - [ ] `python .github/scripts/check-skills.py` passes — any new skill is `skills/<name>/SKILL.md` with kebab-case `name`

@@ -87,6 +87,6 @@ No import cycles. ✅
 | `gateway.router` | 255 |
 | `mcp_proxy_server` | 972 |
 | `proxy_defense` | 2301 |
-| `proxy_harvester` | 933 |
+| `proxy_harvester` | 960 |
 | `reverse_proxy` | 1028 |
 

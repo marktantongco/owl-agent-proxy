@@ -558,16 +558,36 @@ class UpstreamHarvester:
     def save_state(self) -> None:
         """Persist harvester state (_seen, _last, health tracker) to disk.
 
+        Merged into whatever is already on disk, not written over it. Filtering
+        undeclared sources in ``load_state`` makes this mandatory: without the
+        merge, the next save of a one-source harvester would delete every other
+        source's learned health from the file. The two changes only work as a
+        pair, which is why they land together.
+
         Written atomically via temp file + replace so a crash mid-write never
         leaves a truncated state file.
         """
         try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            previous: Dict[str, Any] = {}
+            if STATE_FILE.exists():
+                try:
+                    with open(STATE_FILE) as handle:
+                        previous = json.load(handle)
+                except (OSError, ValueError):
+                    previous = {}  # corrupt state is replaced, not propagated
+
+            merged_seen = set(previous.get("seen", [])) | self._seen
+            merged_last: Dict[str, List[str]] = dict(previous.get("last", {}))
+            merged_last.update({name: [p.get("url", "") for p in items]
+                                for name, items in self._last.items()})
+            merged_health: Dict[str, Any] = dict(previous.get("health", {}))
+            merged_health.update(self.health.snapshot())
+
             state = {
-                "seen": sorted(self._seen),
-                "last": {name: [p.get("url", "") for p in items]
-                         for name, items in self._last.items()},
-                "health": self.health.snapshot(),
+                "seen": sorted(merged_seen),
+                "last": merged_last,
+                "health": merged_health,
             }
             tmp = str(STATE_FILE) + ".tmp"
             with open(tmp, "w") as handle:
@@ -592,7 +612,14 @@ class UpstreamHarvester:
             for name, urls in state.get("last", {}).items():
                 self._last[name] = [{"url": u} for u in urls if u]
             health_state = state.get("health", {})
+            declared = {source.name for source in self.sources}
             for name, stats in health_state.items():
+                # A harvester built with an explicit source list must not adopt
+                # health rows for sources it does not declare. Otherwise
+                # snapshot() reports sources that the instance never fetches, and
+                # a caller ranking by yield picks from a list it cannot use.
+                if name not in declared:
+                    continue
                 entry = self.health._stats[name]
                 entry.fetched = float(stats.get("fetched", 0.0))
                 entry.valid = float(stats.get("valid", 0.0))

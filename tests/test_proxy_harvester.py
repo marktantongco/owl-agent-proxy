@@ -573,3 +573,88 @@ class TestValidateProxy:
         started = time.perf_counter()
         assert await validate_proxy("http://[::1]:9", timeout=0.5) is None
         assert time.perf_counter() - started < 3
+
+
+class TestStateIsolation:
+    """A custom source list must not inherit or destroy another run's state.
+
+    Both defects were found by probing a fresh harvester with one source after a
+    default-source harvester had run in the same HOME: `snapshot()` reported four
+    sources the instance would never fetch.
+    """
+
+    def test_declared_sources_do_not_inherit_foreign_health(self, tmp_path, monkeypatch):
+        import proxy_harvester as ph
+
+        monkeypatch.setattr(ph, "STATE_FILE", tmp_path / "harvester_state.json")
+        ph.STATE_FILE.write_text(json.dumps({
+            "seen": [],
+            "last": {},
+            "health": {
+                "proxyscrape_json": {"fetched": 10.0, "valid": 2.0,
+                                     "failures": 0, "last_fetch": 1.0,
+                                     "last_error": None},
+            },
+        }))
+
+        async def run():
+            async with ph.UpstreamHarvester(
+                sources=[ph.ProxySource("mine", "http://127.0.0.1:1/x", "json")],
+                timeout=1.0,
+            ) as harvester:
+                return harvester.health.snapshot()
+
+        # Harvest is not needed: load_state runs on __aenter__.
+        snapshot = asyncio.run(run())
+        assert "mine" not in snapshot
+        assert "proxyscrape_json" not in snapshot, (
+            "a harvester declared with one source adopted another run's source health"
+        )
+
+    def test_saving_does_not_erase_other_sources_learning(self, tmp_path, monkeypatch):
+        """The filter above only stays safe because save_state merges."""
+        import proxy_harvester as ph
+
+        monkeypatch.setattr(ph, "STATE_FILE", tmp_path / "harvester_state.json")
+        ph.STATE_FILE.write_text(json.dumps({
+            "seen": ["http://9.9.9.9:8080"],
+            "last": {"proxyscrape_json": ["http://9.9.9.9:8080"]},
+            "health": {
+                "proxyscrape_json": {"fetched": 100.0, "valid": 12.0,
+                                     "failures": 0, "last_fetch": 1.0,
+                                     "last_error": None},
+            },
+        }))
+
+        async def run():
+            async with ph.UpstreamHarvester(
+                sources=[ph.ProxySource("diag", "http://127.0.0.1:1/y", "json")],
+                timeout=1.0,
+            ) as harvester:
+                await harvester.harvest(max_per_source=1)
+
+        asyncio.run(run())
+        after = json.loads(ph.STATE_FILE.read_text())
+        assert "diag" in after["health"]
+        assert "proxyscrape_json" in after["health"], (
+            "a one-source diagnostic run deleted the default sources' learned health"
+        )
+        assert after["health"]["proxyscrape_json"]["fetched"] == 100.0
+        assert "http://9.9.9.9:8080" in after["seen"]
+
+    def test_corrupt_state_file_is_replaced_not_propagated(self, tmp_path, monkeypatch):
+        import proxy_harvester as ph
+
+        monkeypatch.setattr(ph, "STATE_FILE", tmp_path / "harvester_state.json")
+        ph.STATE_FILE.write_text("{ this is not json")
+
+        async def run():
+            async with ph.UpstreamHarvester(
+                sources=[ph.ProxySource("s", "http://127.0.0.1:1/z", "json")],
+                timeout=1.0,
+            ) as harvester:
+                await harvester.harvest(max_per_source=1)
+
+        asyncio.run(run())
+        after = json.loads(ph.STATE_FILE.read_text())
+        assert "s" in after["health"]
