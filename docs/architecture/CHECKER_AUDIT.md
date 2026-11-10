@@ -85,7 +85,13 @@ you learn to bypass it.
 
 ## Recommendation
 
-1. Merge `gen-docs` into `gen-architecture`: one generator, two targets, one CI step.
+1. ~~Merge `gen-docs` into `gen-architecture`: one generator, two targets, one CI
+   step.~~ **Retracted — measured, see `docs/SKILL_RESOLUTION.md`.** On the same
+   tree, `gen-architecture --check` takes **0.11 s** (AST only) and `gen-docs
+   --check` takes **3.96 s** (it runs `pytest --collect-only`, so it needs the
+   full dependency install). Merging them makes the 0.11 s job pay 3.96 s and a
+   pip install to save one YAML step. The 36× is the thing worth keeping
+   separate.
 2. Delete `ci-check.sh` **only after** the PR template has been in use long
    enough to show reviews carry the justification. Not yet — the template has
    seen two PRs.

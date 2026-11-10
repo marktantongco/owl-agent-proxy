@@ -166,7 +166,7 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
 - Framework overview: `docs/skills-framework/README.md`
 - Quick reference: `docs/skills-framework/QUICK_REFERENCE.md`
-- Skill stubs: `skills/` (10 conceptual skill SKILL.md files)
+- Skill stubs: `skills/` (30 conceptual skill SKILL.md files)
 - Skill installation: `~/.agents/skills/` (26 skills installed: 16 original + 10 research/conceptual)
 - Delivery tool: `tools/grill-engineering/` + `agent-run` CLI
 - Project config: `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`

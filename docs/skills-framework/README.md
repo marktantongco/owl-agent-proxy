@@ -160,7 +160,8 @@ agent-run run <issue-number> --repo marktantongco/owl-agent-proxy
 
 ## Research Investigation Skill
 
-**Path:** `~/.agents/skills/research-investigation-pipeline/SKILL.md`
+**Path:** none — this stack is a composition of skills, not a directory. Each
+constituent is vendored in `skills/`.
 
 **Stack:** `parallel-deep-research`, `parallel-findall`, `github-research`, `free-search-aggregator`, `freeUnlimited-websearch`, `you-web`, `agent-reach`, `meta-skill` (missing), `brainstorming`, `grilling`, `grill-me`, `writing-plans`, `to-spec`, `domain-modeling`, `grill-with-docs`
 
@@ -180,7 +181,7 @@ npx skills add https://github.com/youdotcom-oss/agent-skills --skill you-web --a
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
 - Framework overview: `docs/skills-framework/README.md` (this file)
 - Quick reference: `docs/skills-framework/QUICK_REFERENCE.md`
-- Skill stubs: `skills/` (10 conceptual skill SKILL.md files)
+- Skill stubs: `skills/` (30 conceptual skill SKILL.md files)
 - Skill installation: `~/.agents/skills/` (26 skills installed)
 - Delivery tool: `tools/grill-engineering/` + `agent-run` CLI
 - Project config: `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`
