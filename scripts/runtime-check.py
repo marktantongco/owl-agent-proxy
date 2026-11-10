@@ -60,6 +60,19 @@ from urllib.parse import parse_qs, urlparse
 RESULTS: list[dict] = []
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True only for loopback literals. No DNS lookup: a name could resolve out."""
+    if host in ("localhost", ""):
+        return True
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback
+
+
 # ── a real forward proxy, on loopback ───────────────────────────────────────
 class ProxyHandler(BaseHTTPRequestHandler):
     """Minimal HTTP forward proxy.
@@ -81,6 +94,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not parsed.scheme or not parsed.hostname:
             # Not an absolute-URI request: this client bypassed the proxy.
             self.send_error(400, "proxy expects an absolute URI")
+            return
+        if not _is_loopback_host(parsed.hostname):
+            # This is a test double, not a proxy. Forwarding to whatever host a
+            # request names would make it a request-forgery primitive, and
+            # CodeQL flagged exactly that before this guard existed. The only
+            # origin this harness ever needs is its own loopback server.
+            self.send_error(403, "runtime-check proxy forwards to loopback only")
             return
         body = self._forward(parsed)
         if body is None:
@@ -236,6 +256,31 @@ async def check_validate_through_real_proxy(proxy_port: int, origin_port: int) -
     )
 
 
+async def check_proxy_refuses_non_loopback(proxy_port: int) -> None:
+    """The test proxy must refuse to forward anywhere but loopback.
+
+    Guards a test double against becoming a request-forgery primitive. Asserted
+    rather than assumed: a guard nobody exercises is a comment.
+    """
+    import http.client
+
+    def _attempt(uri: str) -> int:
+        conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
+        try:
+            conn.request("GET", uri, headers={"Host": "localhost"})
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    blocked = _attempt("http://example.com/")
+    allowed = _attempt(f"http://127.0.0.1:{proxy_port}/")
+    _record(
+        "proxy refuses non-loopback destinations",
+        blocked == 403,
+        f"external -> {blocked}, loopback -> {allowed}",
+    )
+
+
 async def check_state_isolation_across_instances(source_port: int) -> None:
     """The seam that 598 tests missed: run A's file, run B's source list."""
     import proxy_harvester as ph
@@ -349,6 +394,8 @@ async def run_all() -> int:
          check_harvest_both_formats, (src_port,)),
         ("validate_proxy through a real proxy",
          check_validate_through_real_proxy, (proxy_port, origin_port)),
+        ("proxy refuses non-loopback", check_proxy_refuses_non_loopback,
+         (proxy_port,)),
         ("state isolation across instances",
          check_state_isolation_across_instances, (src_port,)),
         ("session affinity", check_affinity_is_sticky, ()),

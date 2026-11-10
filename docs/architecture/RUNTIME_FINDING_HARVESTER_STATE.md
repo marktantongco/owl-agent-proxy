@@ -93,7 +93,7 @@ thinnest.
 
 ## The check this produced
 
-`scripts/runtime-check.py` — five cases driving real components through real
+`scripts/runtime-check.py` — six cases driving real components through real
 code paths against loopback only:
 
 | Case | What is actually exercised |
@@ -103,6 +103,7 @@ code paths against loopback only:
 | state isolation | run A persists, run B declares a different source, disk checked after both |
 | session affinity | sticky read, rebind reports the previous proxy, TTL expiry |
 | circuit breaker | opens at threshold, closes on success |
+| proxy refuses non-loopback | the harness's own forward proxy answers 403 off-loopback; asserted, not assumed |
 
 **It fails on the bug it was built for.** Against `main`'s `proxy_harvester.py`:
 

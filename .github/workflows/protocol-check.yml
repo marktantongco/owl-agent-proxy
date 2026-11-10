@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only: every job here checks the tree, none writes back.
+permissions:
+  contents: read
+
 jobs:
   protocol-check:
     name: Protocol escalation + credential guard
