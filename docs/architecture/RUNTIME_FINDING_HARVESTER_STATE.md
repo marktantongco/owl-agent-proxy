@@ -103,7 +103,7 @@ code paths against loopback only:
 | state isolation | run A persists, run B declares a different source, disk checked after both |
 | session affinity | sticky read, rebind reports the previous proxy, TTL expiry |
 | circuit breaker | opens at threshold, closes on success |
-| proxy refuses non-loopback | the harness's own forward proxy answers 403 off-loopback; asserted, not assumed |
+| proxy target is pinned | the harness's own forward proxy dials one fixed loopback origin; a request naming `example.com` still reaches only the local server |
 
 **It fails on the bug it was built for.** Against `main`'s `proxy_harvester.py`:
 

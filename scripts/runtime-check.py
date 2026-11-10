@@ -60,31 +60,26 @@ from urllib.parse import parse_qs, urlparse
 RESULTS: list[dict] = []
 
 
-def _is_loopback_host(host: str) -> bool:
-    """True only for loopback literals. No DNS lookup: a name could resolve out."""
-    if host in ("localhost", ""):
-        return True
-    import ipaddress
-
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return addr.is_loopback
-
-
 # ── a real forward proxy, on loopback ───────────────────────────────────────
 class ProxyHandler(BaseHTTPRequestHandler):
-    """Minimal HTTP forward proxy.
+    """Minimal HTTP forward proxy, pointed at one fixed origin.
 
     Handles absolute-URI GETs (``GET http://host:port/path HTTP/1.1``), which is
-    what a client sends when it is told to use a forward proxy. Forwards the
-    request to the origin, re-serves the response, and stamps a hop header so
-    the origin can record that the request came *through* the proxy rather than
-    around it. Proxying is observable, not assumed.
+    what a client sends when it is told to use a forward proxy. It re-serves the
+    response and stamps a hop header so the origin can record that the request
+    came *through* the proxy rather than around it: proxying is observable, not
+    assumed.
+
+    The destination is ``target``, set once at startup — never the host in the
+    request. Dialing what the request names would make a test double into a
+    request-forgery primitive; the first version did that (with a loopback
+    allowlist in front of it) and CodeQL was right to keep flagging it, because
+    "parse a URL a stranger controls, then connect to it" is the whole shape of
+    the bug. The only origin this harness needs is its own loopback server.
     """
 
     protocol_version = "HTTP/1.1"
+    target: tuple[str, int] | None = None
 
     def log_message(self, *args):  # silence the per-request stderr noise
         pass
@@ -95,12 +90,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # Not an absolute-URI request: this client bypassed the proxy.
             self.send_error(400, "proxy expects an absolute URI")
             return
-        if not _is_loopback_host(parsed.hostname):
-            # This is a test double, not a proxy. Forwarding to whatever host a
-            # request names would make it a request-forgery primitive, and
-            # CodeQL flagged exactly that before this guard existed. The only
-            # origin this harness ever needs is its own loopback server.
-            self.send_error(403, "runtime-check proxy forwards to loopback only")
+        if self.target is None:
+            self.send_error(503, "proxy target not configured")
             return
         body = self._forward(parsed)
         if body is None:
@@ -116,13 +107,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward(self, parsed):
         import http.client
 
-        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        # Fragments of the request are used as a *path*, never as the host.
+        host, port = self.target
+        conn = http.client.HTTPConnection(host, port, timeout=5)
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
         try:
             conn.request("GET", path, headers={
-                "Host": f"{parsed.hostname}:{parsed.port}",
+                "Host": f"{host}:{port}",
                 "X-Owl-Via": "forward-proxy",
             })
             response = conn.getresponse()
@@ -256,13 +249,16 @@ async def check_validate_through_real_proxy(proxy_port: int, origin_port: int) -
     )
 
 
-async def check_proxy_refuses_non_loopback(proxy_port: int) -> None:
-    """The test proxy must refuse to forward anywhere but loopback.
+async def check_proxy_target_is_pinned(proxy_port: int, origin_port: int) -> None:
+    """The test proxy must dial its pinned origin, never the host in the request.
 
-    Guards a test double against becoming a request-forgery primitive. Asserted
-    rather than assumed: a guard nobody exercises is a comment.
+    Sending an absolute URI naming a foreign host is exactly the request-forgery
+    shape: if the destination came from the request, this would dial example.com.
+    Asserted rather than assumed — a guard nobody exercises is a comment.
     """
     import http.client
+
+    OriginHandler.hits.clear()
 
     def _attempt(uri: str) -> int:
         conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
@@ -272,12 +268,14 @@ async def check_proxy_refuses_non_loopback(proxy_port: int) -> None:
         finally:
             conn.close()
 
-    blocked = _attempt("http://example.com/")
-    allowed = _attempt(f"http://127.0.0.1:{proxy_port}/")
+    named_foreign = _attempt("http://example.com/pinned-probe")
+    reached = [h for h in OriginHandler.hits if h["path"] == "/pinned-probe"]
     _record(
-        "proxy refuses non-loopback destinations",
-        blocked == 403,
-        f"external -> {blocked}, loopback -> {allowed}",
+        "proxy dials its pinned origin, not the named host",
+        named_foreign == 200 and len(reached) == 1
+        and reached[0]["via"] == "forward-proxy",
+        f"request naming example.com -> {named_foreign}, "
+        f"local origin sees {len(reached)} hop(s)",
     )
 
 
@@ -381,6 +379,7 @@ async def run_all() -> int:
         src_srv, src_port = _serve(SourceHandler)
         proxy_srv, proxy_port = _serve(ProxyHandler)
         origin_srv, origin_port = _serve(OriginHandler)
+        ProxyHandler.target = ("127.0.0.1", origin_port)  # fixed at startup
         servers = [src_srv, proxy_srv, origin_srv]
     except OSError as exc:
         print(f"harness could not bind loopback ports: {exc}", file=sys.stderr)
@@ -394,8 +393,8 @@ async def run_all() -> int:
          check_harvest_both_formats, (src_port,)),
         ("validate_proxy through a real proxy",
          check_validate_through_real_proxy, (proxy_port, origin_port)),
-        ("proxy refuses non-loopback", check_proxy_refuses_non_loopback,
-         (proxy_port,)),
+        ("proxy target is pinned", check_proxy_target_is_pinned,
+         (proxy_port, origin_port)),
         ("state isolation across instances",
          check_state_isolation_across_instances, (src_port,)),
         ("session affinity", check_affinity_is_sticky, ()),
