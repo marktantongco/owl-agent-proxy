@@ -31,6 +31,14 @@ jobs:
           python-version: "3.11"
       - name: Validate SKILL.md frontmatter
         run: python .github/scripts/check-skills.py
+      # Same script, same job — not an eighth check. Packaging says "is each
+      # skill valid?"; this says "does every skill the docs name actually
+      # exist?", the question that let a phantom path sit in four documents.
+      # Stdlib only, so it costs no install.
+      - name: Cited skills exist and counts are current
+        run: python .github/scripts/check-skills.py --citations
+      - name: Citation checker self-tests (must catch a phantom and a stale count)
+        run: python tests/test_skills_citations.py
       # Offline only. The verifier can re-fetch pinned upstream commits with
       # --remote, but a network hiccup must never turn a green build red; that
       # mode is for bumping a skill, not for CI.

@@ -43,7 +43,7 @@ repository produced three times in one week.
 | Check | Probe | Result |
 |-------|-------|--------|
 | 1 | unjustified `protocol="ja3"` call | ✅ exit 1 |
-| 2 | `skills/BadName/SKILL.md` | ✅ exit 1 — `must be lowercase kebab-case` |
+| 2 | `skills/BadName/SKILL.md` | ✅ exit 1 — `must be lowercase kebab-case` | <!-- skills-ignore -->
 | 3 | silent `except Exception: pass` appended to `proxy_harvester.py` | ✅ exit 1 |
 | 4 | `import proxy_defense` injected into `proxy_harvester.py` | ✅ exit 1 — reported both the upward edge and the cycle |
 | 5 | stale table after adding a test file | ✅ exit 1 (it caught its own author) |
@@ -85,7 +85,13 @@ you learn to bypass it.
 
 ## Recommendation
 
-1. Merge `gen-docs` into `gen-architecture`: one generator, two targets, one CI step.
+1. ~~Merge `gen-docs` into `gen-architecture`: one generator, two targets, one CI
+   step.~~ **Retracted — measured, see `docs/SKILL_RESOLUTION.md`.** On the same
+   tree, `gen-architecture --check` takes **0.11 s** (AST only) and `gen-docs
+   --check` takes **3.96 s** (it runs `pytest --collect-only`, so it needs the
+   full dependency install). Merging them makes the 0.11 s job pay 3.96 s and a
+   pip install to save one YAML step. The 36× is the thing worth keeping
+   separate.
 2. Delete `ci-check.sh` **only after** the PR template has been in use long
    enough to show reviews carry the justification. Not yet — the template has
    seen two PRs.

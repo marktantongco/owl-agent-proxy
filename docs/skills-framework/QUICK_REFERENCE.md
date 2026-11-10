@@ -113,6 +113,7 @@ agent-run doctor                                              # Delivery tool re
 
 - Full framework: `docs/skills-framework/README.md`
 - Pipeline definition: `docs/skills-framework/10-PIPELINES.md`
-- Conceptual skill stubs: `skills/` (10 SKILL.md files)
-- Research skill: `~/.agents/skills/research-investigation-pipeline/SKILL.md`
+- Conceptual skill stubs: `skills/` (30 SKILL.md files)
+- Research skill: no single directory — a composition of `parallel-deep-research`,
+  `duckduckgo-search`, `exa-web-search-free` and `free-search-aggregator`
 - Project config: `AGENTS.md`

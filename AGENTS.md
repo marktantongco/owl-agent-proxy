@@ -1552,11 +1552,12 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_proxy_defense.py` | 182 | cache, dedupe, rate limit, rotation, filter pipeline, middleware, protocols |
 | `tests/test_proxy_harvester.py` | 73 | source schemas, source health, affinity, honeypot hashing, probes |
 | `tests/test_reverse_proxy.py` | 41 | ingress, circuit breaker, load balancing, stealth mode |
+| `tests/test_skills_citations.py` | 10 | — |
 | `tests/test_skills_lock.py` | 7 | — |
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 598 tests**, all offline and hermetic.
+**Total: 608 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
@@ -1681,9 +1682,14 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 
 ### Stacked Research Skill
 
-Located at `~/.agents/skills/research-investigation-pipeline/SKILL.md` (note: file path may vary — check `find /home/user/.agents/skills -name "SKILL.md"`).
+This stack has no directory of its own. It is a composition of skills that are
+each vendored in `skills/` or `.agents/skills/`, invoked together; the summary
+below is the composition, not a single installable path. (Earlier revisions of
+this section cited `~/.agents/skills/research-investigation-pipeline/SKILL.md`, <!-- skills-ignore -->
+which nothing installs — hence the note in that line telling you to go looking
+for it.)
 
-Combines:
+Composed of:
 - `parallel-deep-research` (parallel-web/parallel-agent-skills)
 - `duckduckgo-search` (nousresearch/hermes-agent)
 - `exa-web-search-free` (sundial-org/awesome-openclaw-skills)
@@ -1712,8 +1718,8 @@ Combines:
 | Skills framework (full) | `docs/skills-framework/README.md` | Full framework with handoff contracts, decision gates |
 | 10 pipelines | `docs/skills-framework/10-PIPELINES.md` | 10 use cases with stage mapping |
 | Quick reference | `docs/skills-framework/QUICK_REFERENCE.md` | At-a-glance lookup |
-| Conceptual skill stubs | `skills/` | 14 skill SKILL.md files |
-| Research investigation | `~/.agents/skills/research-investigation-pipeline/SKILL.md` | Stacked research skill |
+| Conceptual skill stubs | `skills/` | 30 skill SKILL.md files |
+| Research investigation | none — composition of the skills below | Stacked research skill, not a single directory |
 | Reverse proxy | `reverse_proxy.py` | v2 HTTP ingress |
 | Harvester (vendored) | `~/.owl-agent/proxy_harvester.py` | Vendored pool engine |
 | Skills lock | `skills-lock.json` | Locked skill sources with hashes |
