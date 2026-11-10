@@ -1550,13 +1550,13 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_memory_backend.py` | 46 | SQLite memory backend, FTS, cross-process lock |
 | `tests/test_pool_backend.py` | 8 | pool persistence backend |
 | `tests/test_proxy_defense.py` | 182 | cache, dedupe, rate limit, rotation, filter pipeline, middleware, protocols |
-| `tests/test_proxy_harvester.py` | 70 | source schemas, source health, affinity, honeypot hashing, probes |
+| `tests/test_proxy_harvester.py` | 73 | source schemas, source health, affinity, honeypot hashing, probes |
 | `tests/test_reverse_proxy.py` | 41 | ingress, circuit breaker, load balancing, stealth mode |
 | `tests/test_skills_lock.py` | 7 | — |
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 595 tests**, all offline and hermetic.
+**Total: 598 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 

@@ -8,11 +8,11 @@
 
 ## Project Alignment
 
-**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 580 offline tests.
+**OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. Its strength is in proxy harvesting/validation, honeypot checks, sticky sessions, and 598 offline tests.
 
 `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy on a configurable port, forwarding to upstream targets with protocol escalation (http/1.1 → http/2 → ja3 → websocket → browser → stealth), circuit breaker, and health-aware load balancing.
 
-**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (580 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not the prose.
+**Version drift note:** Docs disagree (About says v3.0, README says v7.1). Trust the tests (598 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not the prose.
 
 **Operating Instructions:** smp5.4pd.md (Tactical Merge) — Mode: 🐜 Systematic
 

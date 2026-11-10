@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only: every job here checks the tree, none writes back.
+permissions:
+  contents: read
+
 jobs:
   protocol-check:
     name: Protocol escalation + credential guard
@@ -84,6 +88,26 @@ jobs:
         run: python -m pytest -q --cov-fail-under=70
       - name: MCP protocol selftest
         run: python mcp_proxy_server.py --selftest
+
+  runtime:
+    name: Runtime wiring check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      # Complements the unit suite: drives harvester -> validate_proxy -> proxy
+      # -> origin, plus affinity and the circuit breaker, over loopback only.
+      # 598 tests missed the harvester state leak because no test combined
+      # load_state with a differing source list; this check exists to cover
+      # seams like that, and it deliberately needs no egress.
+      - name: Runtime check (loopback only)
+        run: python scripts/runtime-check.py --check
 
   installer:
     name: Installer smoke test

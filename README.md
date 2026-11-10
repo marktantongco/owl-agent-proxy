@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml/badge.svg)](https://github.com/marktantongco/owl-agent-proxy/actions/workflows/protocol-check.yml)
-[![Tests](https://img.shields.io/badge/tests-580%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-598%20passing-brightgreen.svg)](#testing)
 
 ---
 
@@ -114,8 +114,8 @@ Request → Cache → Deduplicate → Rate Limit → Sticky Select → Protocol 
 | Session model | Per-request rotation | Sticky `(agent_id, domain)` binding, plus `random` / `round_robin` modes |
 | Agent access | CLI only | MCP server with 4 tools — see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | Install | Manual pip + copy | `./install-owl.sh` — idempotent, backed up, 20-check verification |
-| Tests | 9 | 580 passing, 0 failed |
-| Coverage | ~50% | 82% (proxy_defense 83%, mcp_proxy_server 86%, proxy_harvester 78%) |
+| Tests | 9 | 598 passing, 0 failed |
+| Coverage | ~50% | 84% (proxy_defense 83%, mcp_proxy_server 86%, proxy_harvester 84%) |
 | CI | Protocol + credential check | + pytest on 3.10/3.11/3.12 + installer smoke test |
 | Rate-limit persistence | in-memory only | `token_buckets.json` — state survives restart via `TokenBucket.to_dict()`/`from_dict()`, debounced save every 10 acquires, final persist on `close()` |
 | Config validation | `dict.get()` with defaults | `CONFIG_SCHEMA` (21 keys) + `validate_config()` — invalid values logged as warnings, unknown keys forward-compatible |
@@ -612,7 +612,8 @@ Run the same checks by hand:
 
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
-python -m pytest -q                                 # 580 tests
+python -m pytest -q                                 # 598 tests
+python scripts/runtime-check.py                     # components wired together, loopback only
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -629,7 +630,8 @@ python mcp_proxy_server.py --selftest               # MCP protocol
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                       # 580 tests, offline + hermetic
+python -m pytest -q                       # 598 tests, offline + hermetic
+python scripts/runtime-check.py           # wiring check, loopback only, no egress
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -641,7 +643,7 @@ bash .github/scripts/ci-check.sh          # escalation + credential guard
 | File | Tests | Covers |
 |------|-------|--------|
 | `tests/test_proxy_defense.py` | ~300 | cache, dedupe, rate limit, proxy rotation, LLM routing, filter pipeline, middleware chain, nginx camouflage, protocol handlers, context manager, CLI |
-| `tests/test_proxy_harvester.py` | 62 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
+| `tests/test_proxy_harvester.py` | 73 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
 | `tests/test_v71_integration.py` | 40 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
 | `tests/test_mcp_server.py` | ~40 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
 
@@ -655,12 +657,12 @@ covered by the installer's V19/V20 checks, which SKIP without network.
 
 | Metric | Value |
 |--------|-------|
-| Tests passed | 580 |
+| Tests passed | 598 |
 | Tests failed | 0 |
-| Coverage | 82% |
+| Coverage | 84% |
 | proxy_defense.py | 83% |
 | mcp_proxy_server.py | 86% |
-| proxy_harvester.py | 78% |
+| proxy_harvester.py | 84% |
 
 ---
 
@@ -712,7 +714,7 @@ owl-agent-proxy/
 │   ├── install-ubuntu.sh         # Ubuntu system install (apt + phases)
 │   ├── install-arch.sh           # Arch / omArchy system install
 │   └── smoke-stealth.py          # Live stealth-rung check (needs real networking)
-├── tests/                        # 580 tests, all offline + hermetic
+├── tests/                        # 598 tests, all offline + hermetic
 │   ├── conftest.py               #   blocks outbound sockets (loopback excepted)
 │   ├── test_proxy_defense.py     #   182
 │   ├── test_mcp_server.py        #   118

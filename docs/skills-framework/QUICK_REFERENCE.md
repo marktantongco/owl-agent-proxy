@@ -10,7 +10,7 @@
 
 **OWL Agent Proxy core is NOT a reverse proxy.** It is a client-side HTTP defense library + stdio MCP server + CLI. `reverse_proxy.py` adds optional HTTP ingress — `./run.sh serve` wraps ResilientClient egress as a reverse proxy with protocol escalation, circuit breaker, and load balancing.
 
-**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (580 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not prose.
+**Version drift:** Docs disagree (About says v3.0, README says v7.1). Trust tests (598 passing) and the generated `docs/architecture/MODULE_GRAPH.md`, not prose.
 
 ---
 
@@ -102,7 +102,7 @@ agent-run run <issue> --repo <owner/repo> # Automated ticket delivery
 ## Verification
 
 ```bash
-python -m pytest tests/ -q                                    # Test suite (580 passed, 82% coverage)
+python -m pytest tests/ -q                                    # Test suite (598 passed, 82% coverage)
 python scripts/verify-install.py --owl-home <path> --no-live  # Install verify (18 PASS, 0 FAIL, 2 SKIP)
 agent-run doctor                                              # Delivery tool readiness
 ```
