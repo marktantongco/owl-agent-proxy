@@ -613,6 +613,7 @@ Run the same checks by hand:
 ```bash
 bash .github/scripts/ci-check.sh                    # escalation + credential guard
 python -m pytest -q                                 # 598 tests
+python scripts/runtime-check.py                     # components wired together, loopback only
 python mcp_proxy_server.py --selftest               # MCP protocol
 ./install-owl.sh --no-live                          # installer + verification
 ```
@@ -630,6 +631,7 @@ python mcp_proxy_server.py --selftest               # MCP protocol
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q                       # 598 tests, offline + hermetic
+python scripts/runtime-check.py           # wiring check, loopback only, no egress
 python mcp_proxy_server.py --selftest     # MCP protocol
 python proxy_defense.py                   # live demo (needs egress)
 bash .github/scripts/ci-check.sh          # escalation + credential guard
@@ -641,7 +643,7 @@ bash .github/scripts/ci-check.sh          # escalation + credential guard
 | File | Tests | Covers |
 |------|-------|--------|
 | `tests/test_proxy_defense.py` | ~300 | cache, dedupe, rate limit, proxy rotation, LLM routing, filter pipeline, middleware chain, nginx camouflage, protocol handlers, context manager, CLI |
-| `tests/test_proxy_harvester.py` | 62 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
+| `tests/test_proxy_harvester.py` | 73 | ProxyScrape + monosans schemas, IP filtering, source health, text/JSON envelopes, affinity TTL/eviction, honeypot hashing, probe rejection |
 | `tests/test_v71_integration.py` | 40 | sticky selection, rotation modes, quarantine, honeypot rejection, trimming, persistence, config merge, dedupe failures |
 | `tests/test_mcp_server.py` | ~40 | frames (newline + Content-Length), initialize/notifications/batch, all four tools, stdout purity, real stdio subprocess |
 

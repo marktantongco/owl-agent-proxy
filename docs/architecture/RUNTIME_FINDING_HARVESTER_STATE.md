@@ -91,9 +91,51 @@ exercised a single component in isolation. The defect is at a seam — `load_sta
 × constructor argument × `save_state` — and seams are where current coverage is
 thinnest.
 
-## Constraint this imposes on the runtime check
+## The check this produced
 
-The proposed live-egress check must isolate `HOME`/`STATE_FILE` per invocation,
-or it will measure a previous run's state: this bug, one level up. Note also that
-the sandbox that found this cannot reach any of the four proxy sources — runtime
-coverage does **not** require egress.
+`scripts/runtime-check.py` — five cases driving real components through real
+code paths against loopback only:
+
+| Case | What is actually exercised |
+|------|---------------------------|
+| harvest both live formats | JSON + text parsers, both against a live HTTP endpoint; `is_public_ip` drops a private entry |
+| validate through a real proxy | a real forward proxy on `127.0.0.1`; origin records the `X-Owl-Via` hop, so proxying is observed, not assumed |
+| state isolation | run A persists, run B declares a different source, disk checked after both |
+| session affinity | sticky read, rebind reports the previous proxy, TTL expiry |
+| circuit breaker | opens at threshold, closes on success |
+
+**It fails on the bug it was built for.** Against `main`'s `proxy_harvester.py`:
+
+```
+[FAIL] state isolation holds across instances:
+       run B inherited ['rt_a']; disk after B has ['rt_a', 'rt_b']
+```
+
+and with the load filter but the merge reverted — the middle row of the table
+above — it fails the other way:
+
+```
+[FAIL] state isolation holds across instances:
+       run B inherited nothing; disk after B has ['rt_b']
+```
+
+Both halves of the coupling are caught, `--check` exits 1 either way, and it
+passes on the fixed tree. A check that has never failed is a green light with a
+test suite attached; this one has been made to fail deliberately.
+
+Two things this cost, both instructive:
+
+- The first draft expected a fresh instance to see its own source in
+  `health.snapshot()`. It sees nothing — health rows are created on first fetch.
+  Asserting the wrong contract is how a check becomes noise.
+- The first fixtures used `10.x` addresses. The parsers dropped every one of
+  them, because `is_public_ip` rejects private/loopback/CGNAT at parse time.
+  The check now asserts that drop explicitly instead of tripping over it.
+
+## Constraint it imposes
+
+`HOME` is redirected to a temp directory for the whole run and the state file is
+deleted between cases, or the check measures a previous run's state: this bug,
+one level up. And no egress is used anywhere — the sandbox that found this
+reaches none of the four proxy sources, and a check that needs the internet runs
+nowhere.
