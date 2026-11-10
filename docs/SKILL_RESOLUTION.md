@@ -41,7 +41,7 @@ A real, live instance of the drift class this repo has been fighting — in its
 own docs, unnoticed by seven checks:
 
 ```
-AGENTS.md:1684  Located at `~/.agents/skills/research-investigation-pipeline/SKILL.md`
+AGENTS.md:1684  Located at `~/.agents/skills/research-investigation-pipeline/SKILL.md` <!-- skills-ignore -->
                 (note: file path may vary — check `find /home/user/.agents/skills ...`)
 ```
 
@@ -55,9 +55,9 @@ The same section's neighbours had drifted too:
 
 | Claim | Reality |
 |---|---|
-| "14 skill SKILL.md files" (AGENTS.md:1715) | 30 |
-| "10 SKILL.md files" (QUICK_REFERENCE.md:116) | 30 |
-| "10 conceptual skill SKILL.md files" (README.md:183, 10-PIPELINES.md:169) | 30 |
+| "14 skill SKILL.md files" (AGENTS.md:1715) | 30 | <!-- skills-ignore -->
+| "10 SKILL.md files" (QUICK_REFERENCE.md:116) | 30 | <!-- skills-ignore -->
+| "10 conceptual skill SKILL.md files" (README.md:183, 10-PIPELINES.md:169) | 30 | <!-- skills-ignore -->
 
 AGENTS.md contradicted itself and CI passed: the generated block at line 1579
 says `30 skills`, the hand-written prose at 1715 said `14`. Both in one file.
@@ -73,6 +73,58 @@ The named skills were never found because they were never searched *with the
 tool the repo already ships*. Skills must be searched by exact name **and**
 variants, and the candidate read before it is cited — the same rule the
 generators enforce for tables, applied to names.
+
+## The check this produced
+
+`check-skills.py --citations` — the same script, same CI job. Packaging answers
+"is each skill valid?"; this answers "does every skill the docs name exist?",
+and "is the count the docs state still true?". Two rules:
+
+| Rule | Catches |
+|---|---|
+| phantom citation | a backticked `skills/<name>` or `~/.agents/skills/<name>` that resolves to no directory in `skills/` or `.agents/skills/` |
+| stale count | "N SKILL.md files" where N is neither the `skills/` total nor the total including vendored skills |
+
+**It fails on `main`.** Run against `main`'s docs, before this branch's fixes:
+
+```
+FAILED: 8 problem(s)
+  AGENTS.md:1684  cites ~/.agents/skills/research-investigation-pipeline/SKILL.md
+  AGENTS.md:1715  claims '14 skill SKILL.md files' but skills/ has 30 <!-- skills-ignore -->
+  AGENTS.md:1716  cites ~/.agents/skills/research-investigation-pipeline/SKILL.md
+  ... 5 more
+```
+
+exit 1. On this branch, exit 0.
+
+### What the first draft got wrong
+
+The first version searched for bare skill names anywhere in prose. That flagged
+**lobehub and GitHub URL slugs** (`bidodev-devils-advocate-skill-devils-advocate`,
+`hermes-kanban`) as phantoms — six false positives against one real. Restricting
+to backticked paths removed all of them.
+
+The first version also **missed the phantom it was written for**: its regex had
+`(?:~?\.?agents/)?`, which reads "optional literal `~?`" rather than "optional
+`~/`". `~/.agents/skills/...` did not match, and the check passed on `main`. <!-- skills-ignore -->
+The self-test `test_tilde_agents_path_is_caught` exists because of that miss;
+a detector that misses its known defect is worse than no detector.
+
+### Proving the self-tests can fail
+
+Ten self-tests in `tests/test_skills_citations.py`. Each rule was mutated to a
+no-op and the suite re-run:
+
+| Mutation | Result |
+|---|---|
+| phantom rule disabled | 2 tests fail |
+| count rule disabled | 1 test fails |
+| ignore-marker handling removed | 1 test fails |
+
+All ten pass restored. The suite is also honest about what it does **not** do:
+template placeholders (`skills/<name>/SKILL.md`), globs (`skills/*/SKILL.md`),
+URLs, and lines marked `<!-- skills-ignore -->` are not citations, and an
+eleventh test pins that so the noise cannot creep back.
 
 ## Measured: the one consolidation the audit got wrong
 

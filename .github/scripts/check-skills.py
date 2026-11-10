@@ -14,11 +14,14 @@ Exit codes: 0 all skills valid (or none present), 1 violations found.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SKILLS_DIR = REPO_ROOT / "skills"
+AGENTS_SKILLS_DIR = REPO_ROOT / ".agents" / "skills"
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REQUIRED = ("name", "description")
 DESC_MIN, DESC_MAX = 20, 1024
@@ -94,7 +97,93 @@ def check_skill(skill_dir: Path) -> list[str]:
     return problems
 
 
-def main() -> int:
+# ── citation checks (--citations) ──────────────────────────────────────────
+# Packaging validation above answers "is each skill a valid skill?". It cannot
+# answer "does every skill this repo *mentions* exist?", and that is how
+# ~/.agents/skills/research-investigation-pipeline/SKILL.md survived four
+# citations across four documents while nothing installed it. Same for prose
+# asserting a skill count the tree had doubled past.
+#
+# Scope is deliberately narrow, because a noisy check gets bypassed:
+#   - only backticked `skills/<name>` references (a URL slug in prose is not a
+#     citation, and matching bare words flagged lobehub/repo slugs as phantoms)
+#   - template placeholders (<name>, globs) are skipped — they describe a shape
+#   - a line may opt out with an inline `skills-ignore` marker, used for
+#     historical references that must keep naming the thing that was wrong
+CITATION_RE = re.compile(r"`((?:~/\.agents/|\.agents/)?skills/[^`\s]+)`")
+COUNT_RE = re.compile(r"(\d+)\s+(?:conceptual\s+)?(?:skill\s+)?SKILL\.md\s+files", re.I)
+PLACEHOLDER_RE = re.compile(r"[<>*]")
+URL_LINE_RE = re.compile(r"https?://")
+IGNORE_MARKER = "skills-ignore"
+
+DOC_GLOBS = ("*.md", "docs/**/*.md", ".github/**/*.md")
+
+
+def iter_docs() -> list[Path]:
+    """Repo prose that can make claims about skills. Generated files included:
+    a generator writing a phantom is still a phantom."""
+    seen: dict[Path, None] = {}
+    for pattern in DOC_GLOBS:
+        for path in REPO_ROOT.glob(pattern):
+            if any(part in {".git", ".venv", "node_modules", "__pycache__"}
+                   for part in path.parts):
+                continue
+            seen[path] = None
+    return sorted(seen)
+
+
+def _documented_counts() -> dict[str, int]:
+    """The counts a document may cite, keyed by what it is describing."""
+    skills = {p.name for p in SKILLS_DIR.iterdir() if (p / "SKILL.md").is_file()} \
+        if SKILLS_DIR.is_dir() else set()
+    vendored = {p.name for p in AGENTS_SKILLS_DIR.iterdir() if p.is_dir()} \
+        if AGENTS_SKILLS_DIR.is_dir() else set()
+    return {"skills": len(skills), "all": len(skills | vendored)}
+
+
+def check_citations() -> list[str]:
+    """Phantom skill citations and stale 'N SKILL.md files' counts."""
+    problems: list[str] = []
+    known = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir()} if SKILLS_DIR.is_dir() else set()
+    if AGENTS_SKILLS_DIR.is_dir():
+        known |= {p.name for p in AGENTS_SKILLS_DIR.iterdir() if p.is_dir()}
+    counts = _documented_counts()
+    expected = counts["skills"]
+
+    for doc in iter_docs():
+        rel = doc.relative_to(REPO_ROOT)
+        for lineno, line in enumerate(doc.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if IGNORE_MARKER in line or URL_LINE_RE.search(line):
+                continue
+            for match in CITATION_RE.finditer(line):
+                cited = match.group(1)
+                if PLACEHOLDER_RE.search(cited):
+                    continue
+                name = cited.split("skills/", 1)[1].split("/")[0]
+                if name and name not in known:
+                    problems.append(
+                        f"{rel}:{lineno}: cites `{cited}` but no such skill exists "
+                        f"in skills/ or .agents/skills/"
+                    )
+            for match in COUNT_RE.finditer(line):
+                claimed = int(match.group(1))
+                # A count may legitimately describe the vendored subset; only a
+                # claim that matches neither total is a contradiction.
+                if claimed not in (expected, counts["all"]):
+                    problems.append(
+                        f"{rel}:{lineno}: claims '{match.group(0)}' but skills/ has "
+                        f"{expected} ({counts['all']} including .agents/skills/)"
+                    )
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate skills/ packaging.")
+    parser.add_argument("--citations", action="store_true",
+                        help="also flag citations of skills that do not exist, "
+                             "and stale 'N SKILL.md files' counts")
+    args = parser.parse_args(argv)
+
     if not SKILLS_DIR.is_dir():
         print(f"SKIP: no {SKILLS_DIR.name}/ directory")
         return 0
@@ -119,10 +208,17 @@ def main() -> int:
     for path in sorted(p for p in SKILLS_DIR.rglob("*.md") if p.name != "SKILL.md"):
         print(f"WARN: {path.relative_to(SKILLS_DIR.parent)} has no frontmatter — not discoverable")
 
+    citation_problems: list[str] = []
+    if args.citations:
+        citation_problems = check_citations()
+        if not citation_problems:
+            print(f"PASS: citations — every cited skill exists ({_scanned()} documents)")
+
     print()
-    if problems:
-        print(f"FAILED: {len(problems)} skill packaging problem(s)")
-        for problem in problems:
+    if problems or citation_problems:
+        total = len(problems) + len(citation_problems)
+        print(f"FAILED: {total} problem(s)")
+        for problem in problems + citation_problems:
             print(f"  - {problem}")
         return 1
 
@@ -131,6 +227,10 @@ def main() -> int:
         f"{len(legacy_groups)} legacy group(s) + flat files pending migration"
     )
     return 0
+
+
+def _scanned() -> int:
+    return len(iter_docs())
 
 
 if __name__ == "__main__":

@@ -1552,11 +1552,12 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_proxy_defense.py` | 182 | cache, dedupe, rate limit, rotation, filter pipeline, middleware, protocols |
 | `tests/test_proxy_harvester.py` | 73 | source schemas, source health, affinity, honeypot hashing, probes |
 | `tests/test_reverse_proxy.py` | 41 | ingress, circuit breaker, load balancing, stealth mode |
+| `tests/test_skills_citations.py` | 10 | — |
 | `tests/test_skills_lock.py` | 7 | — |
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 598 tests**, all offline and hermetic.
+**Total: 608 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
@@ -1684,7 +1685,7 @@ Each pipeline flows: **DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP*
 This stack has no directory of its own. It is a composition of skills that are
 each vendored in `skills/` or `.agents/skills/`, invoked together; the summary
 below is the composition, not a single installable path. (Earlier revisions of
-this section cited `~/.agents/skills/research-investigation-pipeline/SKILL.md`,
+this section cited `~/.agents/skills/research-investigation-pipeline/SKILL.md`, <!-- skills-ignore -->
 which nothing installs — hence the note in that line telling you to go looking
 for it.)
 

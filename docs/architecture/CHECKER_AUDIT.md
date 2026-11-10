@@ -43,7 +43,7 @@ repository produced three times in one week.
 | Check | Probe | Result |
 |-------|-------|--------|
 | 1 | unjustified `protocol="ja3"` call | ✅ exit 1 |
-| 2 | `skills/BadName/SKILL.md` | ✅ exit 1 — `must be lowercase kebab-case` |
+| 2 | `skills/BadName/SKILL.md` | ✅ exit 1 — `must be lowercase kebab-case` | <!-- skills-ignore -->
 | 3 | silent `except Exception: pass` appended to `proxy_harvester.py` | ✅ exit 1 |
 | 4 | `import proxy_defense` injected into `proxy_harvester.py` | ✅ exit 1 — reported both the upward edge and the cycle |
 | 5 | stale table after adding a test file | ✅ exit 1 (it caught its own author) |
