@@ -1718,7 +1718,7 @@ Composed of:
 | Skills framework (full) | `docs/skills-framework/README.md` | Full framework with handoff contracts, decision gates |
 | 10 pipelines | `docs/skills-framework/10-PIPELINES.md` | 10 use cases with stage mapping |
 | Quick reference | `docs/skills-framework/QUICK_REFERENCE.md` | At-a-glance lookup |
-| Conceptual skill stubs | `skills/` | 30 skill SKILL.md files |
+| Conceptual skill stubs | `skills/` | 31 skill SKILL.md files |
 | Research investigation | none — composition of the skills below | Stacked research skill, not a single directory |
 | Reverse proxy | `reverse_proxy.py` | v2 HTTP ingress |
 | Harvester (vendored) | `~/.owl-agent/proxy_harvester.py` | Vendored pool engine |
