@@ -102,3 +102,71 @@ you learn to bypass it.
 tests. It was found in a seam — `load_state` × the constructor argument ×
 `save_state` — that no individual test combined. The gap worth closing is
 **component seams**, which needs no network at all.
+
+---
+
+# Verification: does the citation gate actually block a PR?
+
+**Date:** 2026-11-11
+**Question:** `check-skills.py --citations` exits 1 locally. Does it fail CI, or
+is this another green light with a test suite attached?
+**Method:** break two things on purpose on a real branch, open a real PR, read
+the job's step results, revert.
+
+## The two probes
+
+| Probe | What was broken |
+|---|---|
+| 1 | `PROBE_DOC.md` citing `skills/ghost-skill/SKILL.md` — a skill that does not exist | <!-- skills-ignore -->
+| 2 | `AGENTS.md` prose count changed `30` → `31`, **outside** every generated marker |
+
+Probe 2 is the interesting one. It is the same defect class as the four stale
+counts this branch already fixed, put back deliberately.
+
+Locally both failed, exit 1, reported precisely:
+
+```
+FAILED: 2 problem(s)
+  - AGENTS.md:1721: claims '31 skill SKILL.md files' but skills/ has 30 <!-- skills-ignore -->
+  - PROBE_DOC.md:3: cites `skills/ghost-skill/SKILL.md` but no such skill exists <!-- skills-ignore -->
+```
+
+Also measured in the same run: **`gen-docs.py --check` returned 0** with that
+prose drift in place. The generator only owns its marked blocks, so a hand-edited
+sentence can disagree with the tree and the release gate says nothing. That is
+exactly why `--citations` had to be a separate rule, and it is the strongest
+argument against merging the two generators — they check disjoint surfaces.
+
+## Result on CI (PR #45)
+
+Job `Skill packaging`, step-level conclusions:
+
+| Step | Conclusion |
+|---|---|
+| Validate SKILL.md frontmatter | **success** |
+| Cited skills exist and counts are current | **failure** |
+| Citation checker self-tests | skipped |
+| Vendored skills match skills-lock.json | skipped |
+
+The failing step is the citation step specifically — not a flake, not an
+install error, not the workflow. Frontmatter passed, so packaging and citations
+are independently gated as designed.
+
+Reverted in `4812430`; PR #45 closed without merging; that branch's tree is
+identical to `main` and its checks returned green.
+
+## What this settles, and what it does not
+
+Settled: a phantom citation or a stale prose count **cannot land on `main`**
+through a pull request. That was an open question in the previous audit — a check
+had never been observed blocking anything.
+
+Not settled: whether the failure is *legible* to whoever hits it. The step name
+is clear and the annotation names file and line; nobody has yet been the person
+on the other end of it. Until that happens, treat the message quality as unproven.
+
+## Cost of this verification
+
+One PR opened and closed (#45), one commit and one revert, ~6 minutes of CI.
+Cheap enough that the question "does this actually block?" should never again be
+answered by inference.
