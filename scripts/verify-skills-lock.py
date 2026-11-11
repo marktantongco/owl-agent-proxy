@@ -26,6 +26,12 @@ verified structurally instead of by byte equality — the body must not contain
 further differences, or the check fails.
 
 Stdlib only.
+
+Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
+
+gate: vendored-files-present: every lock entry's vendoredPath exists [required]
+gate: vendored-bytes-match-pin: vendored content matches the pinned upstream commit, unless a localModification is declared [required]
+gate: lock-is-checkable: --update must be able to record a verifiable hash [required]
 """
 
 from __future__ import annotations

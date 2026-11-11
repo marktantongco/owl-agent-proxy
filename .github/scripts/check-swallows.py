@@ -24,6 +24,12 @@ A guard that can be walked around by changing a keyword argument to a dict is
 not a guard; it is a formality.
 
 Stdlib only. Exit 0 clean, 1 violations.
+
+Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
+
+gate: no-blanket-silent-except: except Exception / bare except never swallows silently [required]
+gate: dict-chosen-protocol-declared: a protocol literal reaching a dict is reported like a keyword call [required]
+gate: narrow-handler-allowed: silence on a specific exception is reported but permitted
 """
 
 from __future__ import annotations

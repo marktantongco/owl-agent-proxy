@@ -3,6 +3,13 @@
 # Enforces: "Why not http/1.1?" must be answered before protocol escalation
 
 set -euo pipefail
+
+# Rules enforced (generated into AGENTS.md by scripts/gen-docs.py; see the
+# "gate:" convention at the top of gen-docs.py):
+#
+# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required]
+# gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required]
+
 ERRORS=0
 WARNINGS=0
 

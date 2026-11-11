@@ -74,6 +74,7 @@ jobs:
         run: |
           python tests/test_architecture_check.py
           python tests/test_docs_generator.py
+          python tests/test_gate_declarations.py
 
   tests:
     name: Tests (Python ${{ matrix.python }})

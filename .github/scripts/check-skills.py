@@ -10,6 +10,12 @@ This check fails the build when a skill does not meet that contract, so the
 packaging cannot regress. Stdlib only — no PyYAML, so CI needs no extra install.
 
 Exit codes: 0 all skills valid (or none present), 1 violations found.
+
+Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
+
+gate: skill-frontmatter-valid: every skills/<name>/SKILL.md declares name and description, kebab-case, matching its directory [required]
+gate: cited-skills-exist: no document cites a skill path that resolves to no directory [required]
+gate: skill-counts-current: no document states a SKILL.md count the tree contradicts [required]
 """
 
 from __future__ import annotations

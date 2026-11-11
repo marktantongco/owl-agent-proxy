@@ -18,6 +18,13 @@ What it measures, all from the repository itself:
   layer table at all (so a new top-level module cannot slip in unmapped)
 
 Stdlib only, so CI needs no extra install.
+
+Rules enforced — see the `gate:` convention at the top of gen-docs.py:
+
+gate: layer-edges-downward: no first-party import points from a lower layer to a higher one [required]
+gate: no-import-cycles: the first-party import graph is acyclic [required]
+gate: every-module-layered: every shipped module appears in the layer table [required]
+gate: map-is-current: docs/architecture/MODULE_GRAPH.md matches the AST [required]
 """
 
 from __future__ import annotations

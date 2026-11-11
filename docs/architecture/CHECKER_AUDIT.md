@@ -246,3 +246,34 @@ its errors cost more than its catches — a real signal, and a weaker one than
   template genuinely covers, and the half seven of nine sites bypass.
 - Any future deletion case for a check must be argued **per rule**, not per
   script, and must say what substitutes if the rule disappears.
+
+### How that is enforced, rather than asked for
+
+Asking for a rule-level argument in a document does nothing; the document is
+where the previous recommendation went wrong. So each gate now **declares** its
+rules in its own header:
+
+```
+# gate: <kebab-case-id>: <what the rule protects> [required]
+```
+
+`gen-docs.py` parses those declarations (comment form for shell, docstring form
+for Python) and generates a `gates` table in AGENTS.md. The consequences are
+mechanical:
+
+| Situation | What happens |
+|---|---|
+| A rule is deleted | its row disappears from the table — a reviewable diff, not a silent edit |
+| A gate is registered with no declarations | `gen-docs.py` **refuses to render** and names the file |
+| A registered gate file is missing | same refusal |
+| A rule loses `[required]` | it renders italic and marked `advisory`, and the header count changes |
+
+Current state: **7 gates, 24 rules, 23 required**. The one advisory rule is
+`narrow-handler-allowed` in `check-swallows.py` — a rule that *permits*
+something rather than forbidding it, so "required" would be the wrong word.
+
+Proof it works: 10 self-tests (`tests/test_gate_declarations.py`), mutation-
+checked — removing the undeclared-gate guard fails 1 test, ignoring the
+`[required]` marker fails 3. The decisive one is
+`test_removing_a_rule_changes_the_table`, which asserts the deletion is visible.
+
