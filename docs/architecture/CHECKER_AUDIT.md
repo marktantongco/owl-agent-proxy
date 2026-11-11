@@ -81,7 +81,7 @@ you learn to bypass it.
 | 4 | `check-swallows` | the only runtime-correctness check; caught 6 real bugs |
 | — | `gen-docs` | **merge into `gen-architecture`** — same concept, two scripts, two CI steps |
 | — | `verify-skills-lock` | **keep as a step**, not a job; 121 ms |
-| — | `ci-check` | **deletion candidate** — 2 real catches vs 4 false positives, and the PR template now covers its ground at review time |
+| — | `ci-check` | ~~deletion candidate~~ **retracted — see below.** Half of it is a security control; the catch/false-positive count was never valid for the whole script |
 
 ## Recommendation
 
@@ -92,9 +92,8 @@ you learn to bypass it.
    full dependency install). Merging them makes the 0.11 s job pay 3.96 s and a
    pip install to save one YAML step. The 36× is the thing worth keeping
    separate.
-2. Delete `ci-check.sh` **only after** the PR template has been in use long
-   enough to show reviews carry the justification. Not yet — the template has
-   seen two PRs.
+2. ~~Delete `ci-check.sh` after the PR template has had another cycle.~~
+   **Retracted — the recommendation was wrong on its own terms.** See below.
 3. Do not add an eighth *documentation* check. The next one should be runtime.
 
 **Correction to point 3:** the runtime bug found in
@@ -105,7 +104,7 @@ tests. It was found in a seam — `load_state` × the constructor argument ×
 
 ---
 
-# Verification: does the citation gate actually block a PR?
+## Verification: does the citation gate actually block a PR?
 
 **Date:** 2026-11-11
 **Question:** `check-skills.py --citations` exits 1 locally. Does it fail CI, or
@@ -170,3 +169,80 @@ on the other end of it. Until that happens, treat the message quality as unprove
 One PR opened and closed (#45), one commit and one revert, ~6 minutes of CI.
 Cheap enough that the question "does this actually block?" should never again be
 answered by inference.
+
+---
+
+## Retraction: `ci-check.sh` must not be deleted
+
+**Date:** 2026-11-11
+**Original recommendation:** delete it — "2 real catches vs 4 false positives, and
+the PR template now covers its ground at review time."
+**Why that is wrong:** the script contains **two independent checks with
+different risk profiles**, and the catch/false-positive count was recorded
+against the script as a whole.
+
+| Check | What it does | Failure if removed |
+|---|---|---|
+| CHECK 1 | protocol escalation justification | a style/process convention — a reviewer can substitute |
+| CHECK 2 | hardcoded proxy credentials (`://user:pass@`) | **nothing substitutes.** A committed proxy credential is a live secret leak |
+
+The PR template can absorb CHECK 1's ground at review time. It cannot absorb
+CHECK 2's: review-time attention is not a credential scanner, and this repo
+handles proxy pools where such URLs are ordinary working data — exactly the
+environment where one gets pasted with a real password.
+
+## Probed, both halves
+
+| Probe | Result |
+|---|---|
+| `protocol="ja3"` with no justification comment | `[FAIL] Missing justification (score: 0/4)`, merge blocked, exit 1 |
+| `POOL = {"http": "http://alice:s3cr3t@proxy.internal:8080"}` | `[FAIL] Hardcoded credentials`, merge blocked, exit 1 |
+
+Both work. The credential probe is the one that matters — it is a real secret
+pattern, caught, blocking.
+
+## What this says about the audit method
+
+Counting catches per *script* conflated a process gate with a security control.
+The count was also never a sound basis for deletion: a check that has caught
+zero of a catastrophic failure class is not therefore worthless, it is
+unexercised. "Cheap to remove" and "safe to remove" are different questions, and
+the audit only asked the first.
+
+## Also measurable, and uncomfortable
+
+On the current tree, CHECK 1's output is:
+
+| Outcome | Count |
+|---|---|
+| exempted without scoring | **6** |
+| scored by the 4-point heuristic | 3 |
+
+Two thirds of the sites this check inspects reach it through an exemption
+(`cache key`, `opted out inline`, `CachedResponse` in a justified handler) —
+three separate escape hatches. The check is not wrong here, but its coverage is
+thinner than its passing output suggests, and every exemption is a place a real
+escalation could sit unflagged.
+
+## Correction on the "trusted, not bypassed" question
+
+An earlier framing claimed `ci-check.sh` blocked merges for three days with false
+positives and that the team "learned to route around it." **That cannot be
+verified in this checkout:** history is shallow (`git rev-list --count` = 1), so
+the events it refers to are not present. The claim is unverified rather than
+disproved, and it should not be repeated as established fact until someone has
+the full history.
+
+What *is* measurable here is on the other side: after the false-positive episode
+the script gained three exemptions and an inline opt-out idiom
+(`# no-escalation:`). Three escape hatches added to a check is what happens when
+its errors cost more than its catches — a real signal, and a weaker one than
+"the team routed around it."
+
+## Revised recommendation
+
+- **Do not delete.** Split instead: keep CHECK 2 as-is, and consider making
+  CHECK 1 advisory (warning, not error) — it is the half whose ground the PR
+  template genuinely covers, and the half seven of nine sites bypass.
+- Any future deletion case for a check must be argued **per rule**, not per
+  script, and must say what substitutes if the rule disappears.
