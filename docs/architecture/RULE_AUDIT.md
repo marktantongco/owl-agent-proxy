@@ -150,3 +150,80 @@ deletion) and two of 24 rules found false. In every case the wrong claim was
 **written down and trusted** until someone probed it. The generated table made
 that cheaper to check — it did not make it automatic. A rule's description is a
 claim about code, and it is only as good as the probe behind it.
+
+---
+
+# Follow-up: probes, and the bug the probes found
+
+**Date:** 2026-11-12
+**Trigger:** the audit above checked what each rule *claims*. It did not check
+that each rule *fires*. A declaration with no test behind it is a claim at one
+remove.
+
+## Probes now declared
+
+`[probe: <test>]` sits beside `[required]` in every gate header, and the generated
+table renders an **Evidence** column. Current state:
+
+```
+7 gates, 24 rules, 23 required, 23 probed
+```
+
+The single `—` is `lock-is-checkable` (`--update must be able to record a
+verifiable hash`). No test exercises `--update`, so the row says so. That dash is
+the column working: an unevidenced rule is now visible rather than merely
+undocumented.
+
+**One claim was withdrawn while writing this.** I initially marked all three
+`verify-skills-lock` rules as probed by `tests/test_skills_lock.py`. Two hold —
+`test_local_check_detects_a_modified_file` deletes a vendored file and asserts
+the "missing" problem, then injects bytes and asserts a hash mismatch. The third
+does not: that file has no `--update` coverage at all. Marking it was the same
+error this document exists to catch, made in the commit that fixes it.
+
+## The bug: justified escalations were rejected near the top of a file
+
+Eleven probes in `tests/test_gate_rules_fire.py`, one per rule that had none.
+Writing the "justified escalation passes" probe exposed a defect in
+`ci-check.sh` that no amount of reading would have found:
+
+```bash
+context=$(sed -n "$((lineno-5)),$((lineno-1))p" "$file" 2>/dev/null || true)
+```
+
+For an escalation on line ≤ 5, `lineno-5` is negative and the range becomes
+`sed -n "-2,2p"` — which `sed` parses as an **option**. It exits with an error,
+`|| true` swallows it, and the context comes back empty. The heuristic then
+scores 0/4 and blocks the merge.
+
+Measured, on a file whose line 2 is a fully justified escalation:
+
+| | Context window | Score | Result |
+|---|---|---|---|
+| before | negative → sed error | 0/4 | **merge blocked** |
+| after | clamped to line 1 | 3/4 | justified |
+
+This is very likely the real source of the "false positives that blocked merges
+for three days" recorded earlier — the audit blamed the scoring heuristic, but
+the heuristic was fine. The context window was empty.
+
+**Fix:** clamp the start to 1.
+
+```bash
+start=$(( lineno - 5 )); [ "$start" -lt 1 ] && start=1
+```
+
+## What changed in the audit's findings
+
+The earlier `ci-check.sh` retraction said CHECK 1's false positives were a
+property of the check's design. That was wrong in an important way: the check
+rejects justifications it cannot *see*, and it could not see them near the top of
+a file. Two of the audit's four failures this session were recommendations
+inferred from counts; this one was a real defect inferred from a count that
+happened to be caused by a bug.
+
+## Still unproven
+
+`lock-is-checkable`, and — more broadly — whether any of the 23 probed rules
+would still fire if their implementation were subtly changed. The probes assert
+the rules fire today; they are not exhaustive about every path through each rule.

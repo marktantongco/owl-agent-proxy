@@ -27,9 +27,9 @@ Stdlib only. Exit 0 clean, 1 violations.
 
 Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
 
-gate: no-blanket-silent-except: except Exception / bare except never swallows silently [required]
-gate: dict-chosen-protocol-declared: a protocol literal reaching a dict is reported like a keyword call [required]
-gate: narrow-handler-allowed: silence on a specific exception is reported but permitted
+gate: no-blanket-silent-except: except Exception / bare except never swallows silently [required] [probe: tests/test_gate_rules_fire.py]
+gate: dict-chosen-protocol-declared: a protocol literal reaching a dict is reported like a keyword call [required] [probe: tests/test_gate_rules_fire.py]
+gate: narrow-handler-allowed: silence on a specific exception is reported but permitted [probe: tests/test_gate_rules_fire.py]
 """
 
 from __future__ import annotations

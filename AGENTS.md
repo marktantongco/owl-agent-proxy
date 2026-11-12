@@ -1546,7 +1546,8 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_ci_check_credentials.py` | 12 | — |
 | `tests/test_docs_generator.py` | 8 | the table generator (proves a stale table fails) |
 | `tests/test_free_catalog.py` | 24 | catalog loading, routes, paid-vendor filter |
-| `tests/test_gate_declarations.py` | 10 | — |
+| `tests/test_gate_declarations.py` | 13 | — |
+| `tests/test_gate_rules_fire.py` | 11 | — |
 | `tests/test_gateway.py` | 22 | auth, circuit breaker, cache, billing, router |
 | `tests/test_mcp_server.py` | 118 | JSON-RPC framing, all tools, stdout purity, real stdio subprocess |
 | `tests/test_memory_backend.py` | 46 | SQLite memory backend, FTS, cross-process lock |
@@ -1559,7 +1560,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 630 tests**, all offline and hermetic.
+**Total: 644 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
@@ -1628,36 +1629,36 @@ This exists because a script-wide catch count was once used to recommend deletin
 `ci-check.sh`, when one of its two rules is a credential scanner with no
 substitute. Argue per rule, not per script.
 
-<!-- generated:gates (7 gates, 24 rules, 23 required) -->
+<!-- generated:gates (7 gates, 24 rules, 23 required, 23 probed) -->
 
-| Gate | Rule | Protects | Required |
-|------|------|----------|----------|
-| `.github/scripts/ci-check.sh` | protocol-escalation-justified | an escalated protocol at a call site carries a stated reason | yes |
-| `.github/scripts/ci-check.sh` | proxy-credentials-not-committed | no hardcoded user:password@ proxy URL anywhere in the tree | yes |
-| `.github/scripts/check-skills.py` | skill-frontmatter-valid | every skills/<name>/SKILL.md declares name and description, kebab-case, matching its directory | yes |
-| `.github/scripts/check-skills.py` | cited-skills-exist | no document cites a skill path that resolves to no directory | yes |
-| `.github/scripts/check-skills.py` | skill-counts-current | no document states a SKILL.md count the tree contradicts | yes |
-| `.github/scripts/check-swallows.py` | no-blanket-silent-except | except Exception / bare except never swallows silently | yes |
-| `.github/scripts/check-swallows.py` | dict-chosen-protocol-declared | a protocol literal reaching a dict is reported like a keyword call | yes |
-| `.github/scripts/check-swallows.py` | _narrow-handler-allowed_ | silence on a specific exception is reported but permitted | advisory |
-| `scripts/gen-architecture.py` | layer-edges-downward | no first-party import points from a lower layer to a higher one | yes |
-| `scripts/gen-architecture.py` | no-import-cycles | the first-party import graph is acyclic | yes |
-| `scripts/gen-architecture.py` | every-module-layered | every shipped module appears in the layer table | yes |
-| `scripts/gen-architecture.py` | map-is-current | docs/architecture/MODULE_GRAPH.md matches the AST | yes |
-| `scripts/gen-docs.py` | skills-inventory-current | the AGENTS.md skills table matches skills/ | yes |
-| `scripts/gen-docs.py` | catalog-matches-source | the free-catalog table matches providers.json | yes |
-| `scripts/gen-docs.py` | test-counts-current | the test-results table matches pytest collection | yes |
-| `scripts/gen-docs.py` | gates-declare-rules | every registered gate declares its rules in its header | yes |
-| `scripts/runtime-check.py` | seam-state-isolation | a harvester that declares one source inherits no other's health | yes |
-| `scripts/runtime-check.py` | probe-separates-tcp-from-http | a dead proxy reports TCP failure, not HTTP failure | yes |
-| `scripts/runtime-check.py` | harness-proxy-is-pinned | the check's own forward proxy dials one fixed loopback origin | yes |
-| `scripts/runtime-check.py` | affinity-sticky-then-expires | a binding is stable until TTL, then gone | yes |
-| `scripts/runtime-check.py` | breaker-opens-then-closes | the circuit breaker opens at threshold and closes on success | yes |
-| `scripts/verify-skills-lock.py` | vendored-files-present | every lock entry's vendoredPath exists | yes |
-| `scripts/verify-skills-lock.py` | vendored-bytes-match-pin | vendored content matches the pinned upstream commit, unless a localModification is declared | yes |
-| `scripts/verify-skills-lock.py` | lock-is-checkable | --update must be able to record a verifiable hash | yes |
+| Gate | Rule | Protects | Required | Evidence |
+|------|------|----------|----------|----------|
+| `.github/scripts/ci-check.sh` | protocol-escalation-justified | an escalated protocol at a call site carries a stated reason | yes | `tests/test_gate_rules_fire.py` |
+| `.github/scripts/ci-check.sh` | proxy-credentials-not-committed | no hardcoded user:password@ proxy URL anywhere in the tree | yes | `tests/test_ci_check_credentials.py` |
+| `.github/scripts/check-skills.py` | skill-frontmatter-valid | every skills/<name>/SKILL.md declares name and description, kebab-case, matching its directory, name <= 64 chars, description 20-1024 chars | yes | `tests/test_gate_rules_fire.py` |
+| `.github/scripts/check-skills.py` | cited-skills-exist | no document cites a skill path that resolves to no directory | yes | `tests/test_skills_citations.py` |
+| `.github/scripts/check-skills.py` | skill-counts-current | no document states a SKILL.md count the tree contradicts | yes | `tests/test_skills_citations.py` |
+| `.github/scripts/check-swallows.py` | no-blanket-silent-except | except Exception / bare except never swallows silently | yes | `tests/test_gate_rules_fire.py` |
+| `.github/scripts/check-swallows.py` | dict-chosen-protocol-declared | a protocol literal reaching a dict is reported like a keyword call | yes | `tests/test_gate_rules_fire.py` |
+| `.github/scripts/check-swallows.py` | _narrow-handler-allowed_ | silence on a specific exception is reported but permitted | advisory | `tests/test_gate_rules_fire.py` |
+| `scripts/gen-architecture.py` | layer-edges-downward | no first-party import points from a lower layer to a higher one | yes | `tests/test_gate_rules_fire.py` |
+| `scripts/gen-architecture.py` | no-import-cycles | the first-party import graph is acyclic | yes | `tests/test_architecture_check.py` |
+| `scripts/gen-architecture.py` | every-module-layered | every module in the runtime graph appears in the layer table | yes | `tests/test_gate_rules_fire.py` |
+| `scripts/gen-architecture.py` | map-is-current | docs/architecture/MODULE_GRAPH.md matches the AST | yes | `tests/test_architecture_check.py` |
+| `scripts/gen-docs.py` | skills-inventory-current | the AGENTS.md skills table matches skills/ | yes | `tests/test_docs_generator.py` |
+| `scripts/gen-docs.py` | catalog-matches-source | the free-catalog table matches providers.json | yes | `tests/test_docs_generator.py` |
+| `scripts/gen-docs.py` | test-counts-current | the test-results table matches pytest collection | yes | `tests/test_docs_generator.py` |
+| `scripts/gen-docs.py` | gates-declare-rules | every registered gate declares its rules in its header | yes | `tests/test_gate_declarations.py` |
+| `scripts/runtime-check.py` | seam-state-isolation | a harvester that declares one source inherits no other's health | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | probe-separates-tcp-from-http | a dead proxy reports TCP failure, not HTTP failure | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | harness-proxy-is-pinned | the check's own forward proxy dials one fixed loopback origin | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | affinity-sticky-then-expires | a binding is stable until TTL, then gone | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | breaker-opens-then-closes | the circuit breaker opens at threshold and closes on success | yes | `scripts/runtime-check.py --check` |
+| `scripts/verify-skills-lock.py` | vendored-files-present | every lock entry's vendoredPath exists | yes | `tests/test_skills_lock.py` |
+| `scripts/verify-skills-lock.py` | vendored-bytes-match-pin | vendored content matches the pinned upstream commit, unless a localModification is declared | yes | `tests/test_skills_lock.py` |
+| `scripts/verify-skills-lock.py` | lock-is-checkable | --update must be able to record a verifiable hash | yes | — |
 
-Generated from each script's header by `scripts/gen-docs.py`. Delete a rule and its row disappears from this table — which is why removal shows up in review instead of in a catch count.
+Generated from each script's header by `scripts/gen-docs.py`. Delete a rule and its row disappears from this table — which is why removal shows up in review instead of in a catch count. An `—` in Evidence means no test proves that rule fires: it is a claim, not yet a gate.
 
 <!-- /generated:gates -->
 

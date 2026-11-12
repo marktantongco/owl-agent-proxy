@@ -48,7 +48,7 @@ def with_gates(files: dict[str, str]):
 
 def test_declared_rules_are_parsed() -> None:
     with with_gates({"g.py": "# gate: a-rule: protects A [required]\n"}) as gen:
-        assert gen.declared_rules(gen.ROOT / "g.py") == [("a-rule", "protects A", True)]
+        assert gen.declared_rules(gen.ROOT / "g.py") == [("a-rule", "protects A", True, None)]
 
 
 def test_shell_comment_form_is_parsed() -> None:
@@ -65,7 +65,31 @@ def test_docstring_form_is_parsed() -> None:
 
 def test_missing_required_marker_is_advisory() -> None:
     with with_gates({"g.py": "# gate: soft-rule: permits something\n"}) as gen:
-        assert gen.declared_rules(gen.ROOT / "g.py") == [("soft-rule", "permits something", False)]
+        assert gen.declared_rules(gen.ROOT / "g.py") == [("soft-rule", "permits something", False, None)]
+
+
+def test_probe_field_is_parsed() -> None:
+    body = "# gate: p-rule: protects P [required] [probe: tests/t.py]\n"
+    with with_gates({"g.py": body}) as gen:
+        assert gen.declared_rules(gen.ROOT / "g.py") == [
+            ("p-rule", "protects P", True, "tests/t.py")
+        ]
+
+
+def test_rule_without_probe_renders_a_dash() -> None:
+    """Unevidenced rules must be visible as such, not silently absent."""
+    body = "# gate: bare-rule: protects nothing yet [required]\n"
+    with with_gates({"g.py": body}) as gen:
+        out = gen.render_gates()
+    assert "bare-rule" in out and "| — |" in out, out
+
+
+def test_probed_count_appears_in_the_header() -> None:
+    files = {"a.py": "# gate: with-probe: x [required] [probe: tests/a.py]\n",
+             "b.py": "# gate: no-probe: y [required]\n"}
+    with with_gates(files) as gen:
+        out = gen.render_gates()
+    assert "2 rules, 2 required, 1 probed" in out, out.splitlines()[0]
 
 
 def test_render_includes_every_rule() -> None:

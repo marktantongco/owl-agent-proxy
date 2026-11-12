@@ -21,10 +21,10 @@ Stdlib only, so CI needs no extra install.
 
 Rules enforced — see the `gate:` convention at the top of gen-docs.py:
 
-gate: layer-edges-downward: no first-party import points from a lower layer to a higher one [required]
-gate: no-import-cycles: the first-party import graph is acyclic [required]
-gate: every-module-layered: every shipped module appears in the layer table [required]
-gate: map-is-current: docs/architecture/MODULE_GRAPH.md matches the AST [required]
+gate: layer-edges-downward: no first-party import points from a lower layer to a higher one [required] [probe: tests/test_gate_rules_fire.py]
+gate: no-import-cycles: the first-party import graph is acyclic [required] [probe: tests/test_architecture_check.py]
+gate: every-module-layered: every module in the runtime graph appears in the layer table [required] [probe: tests/test_gate_rules_fire.py]
+gate: map-is-current: docs/architecture/MODULE_GRAPH.md matches the AST [required] [probe: tests/test_architecture_check.py]
 """
 
 from __future__ import annotations

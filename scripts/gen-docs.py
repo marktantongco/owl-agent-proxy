@@ -24,10 +24,10 @@ Stdlib only.
 
 Rules enforced — see the `gate:` convention below this docstring:
 
-gate: skills-inventory-current: the AGENTS.md skills table matches skills/ [required]
-gate: catalog-matches-source: the free-catalog table matches providers.json [required]
-gate: test-counts-current: the test-results table matches pytest collection [required]
-gate: gates-declare-rules: every registered gate declares its rules in its header [required]
+gate: skills-inventory-current: the AGENTS.md skills table matches skills/ [required] [probe: tests/test_docs_generator.py]
+gate: catalog-matches-source: the free-catalog table matches providers.json [required] [probe: tests/test_docs_generator.py]
+gate: test-counts-current: the test-results table matches pytest collection [required] [probe: tests/test_docs_generator.py]
+gate: gates-declare-rules: every registered gate declares its rules in its header [required] [probe: tests/test_gate_declarations.py]
 
 """
 
@@ -204,8 +204,12 @@ def _collect_counts(files: list[Path]) -> dict[str, int]:
 # Accepts both forms: a `#` comment in a shell/Python header, and a bare line
 # inside a module docstring (Python gates declare there, next to the prose
 # that already explains them).
+# `[required]` marks a rule whose removal must be argued explicitly. `[probe: X]`
+# names the test that proves the rule fires — a rule without one is a claim, and
+# the table should say so rather than leave the column blank and unremarked.
 GATE_DECL_RE = re.compile(
-    r"^\s*(?:#\s*)?gate:\s*([a-z0-9][a-z0-9-]*):\s*(.+?)\s*(\[required\])?\s*$"
+    r"^\s*(?:#\s*)?gate:\s*([a-z0-9][a-z0-9-]*):\s*(.+?)"
+    r"(?:\s*\[required\])?(?:\s*\[probe:\s*([^\]]+)\])?\s*$"
 )
 
 # Registry, not discovery. A gate is a decision, not a file extension: these are
@@ -222,9 +226,9 @@ GATES = (
 )
 
 
-def declared_rules(path: Path) -> list[tuple[str, str, bool]]:
-    """[(id, description, required)] declared in a gate script's header."""
-    rules: list[tuple[str, str, bool]] = []
+def declared_rules(path: Path) -> list[tuple[str, str, bool, str | None]]:
+    """[(id, description, required, probe)] declared in a gate script's header."""
+    rules: list[tuple[str, str, bool, str | None]] = []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -232,7 +236,12 @@ def declared_rules(path: Path) -> list[tuple[str, str, bool]]:
     for line in text.splitlines():
         match = GATE_DECL_RE.match(line)
         if match:
-            rules.append((match.group(1), match.group(2), bool(match.group(3))))
+            # `[required]` may appear before or after `[probe:]`; the regex takes
+            # them in that order, so a probe written first is recovered below.
+            probe = match.group(3)
+            required = "[required]" in line
+            rules.append((match.group(1), match.group(2).strip(), required,
+                          probe.strip() if probe else None))
     return rules
 
 
@@ -260,25 +269,29 @@ def render_gates() -> str:
             + "\n  ".join(undeclared)
         )
 
-    total_required = sum(1 for _, _, rules in rows for _, _, req in rules if req)
+    flat = [(rel, *rule) for rel, _p, rules in rows for rule in rules]
+    total_required = sum(1 for row in flat if row[3])
+    total_probed = sum(1 for row in flat if row[4])
     out = [
-        f"<!-- generated:gates ({len(rows)} gates, "
-        f"{sum(len(r[2]) for r in rows)} rules, {total_required} required) -->",
+        f"<!-- generated:gates ({len(rows)} gates, {len(flat)} rules, "
+        f"{total_required} required, {total_probed} probed) -->",
         "",
-        "| Gate | Rule | Protects | Required |",
-        "|------|------|----------|----------|",
+        "| Gate | Rule | Protects | Required | Evidence |",
+        "|------|------|----------|----------|----------|",
     ]
-    for rel, _purpose, rules in rows:
-        for rule_id, description, required in rules:
-            name = rule_id if required else f"_{rule_id}_"
-            out.append(
-                f"| `{rel}` | {name} | {description} | {'yes' if required else 'advisory'} |"
-            )
+    for rel, rule_id, description, required, probe in flat:
+        name = rule_id if required else f"_{rule_id}_"
+        evidence = f"`{probe}`" if probe else "—"
+        out.append(
+            f"| `{rel}` | {name} | {description} | "
+            f"{'yes' if required else 'advisory'} | {evidence} |"
+        )
     out.append("")
     out.append(
         "Generated from each script's header by `scripts/gen-docs.py`. Delete a "
         "rule and its row disappears from this table — which is why removal shows "
-        "up in review instead of in a catch count."
+        "up in review instead of in a catch count. An `—` in Evidence means no "
+        "test proves that rule fires: it is a claim, not yet a gate."
     )
     out.append("<!-- /generated:gates -->")
     return "\n".join(out)
