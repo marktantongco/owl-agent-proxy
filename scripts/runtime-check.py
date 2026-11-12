@@ -240,6 +240,23 @@ async def check_validate_through_real_proxy(proxy_port: int, origin_port: int) -
                                    timeout=5.0, probe_url=probe)
     ok_live = bool(live and live.get("ok") is True and live.get("status") == 200)
 
+    # TCP-alive but not speaking HTTP: validate_proxy must report tcp_ms with
+    # http_ms None, which is how a caller tells "unreachable" from "reached but
+    # useless". The rule's description claimed this distinction was covered while
+    # the check only asserted dead is None; probing showed the two cases produce
+    # genuinely different dicts, so the assertion is worth having.
+    mute_server = await asyncio.start_server(
+        lambda reader, writer: writer.close(), "127.0.0.1", 0
+    )
+    mute_port = mute_server.sockets[0].getsockname()[1]
+    try:
+        mute = await ph.validate_proxy(f"http://127.0.0.1:{mute_port}",
+                                       timeout=2.0, probe_url=probe)
+    finally:
+        mute_server.close()
+    tcp_only = bool(mute and mute.get("tcp_ms") is not None
+                    and mute.get("http_ms") is None and mute.get("ok") is False)
+
     # A port with nothing behind it must report TCP failure, not HTTP failure.
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -248,12 +265,13 @@ async def check_validate_through_real_proxy(proxy_port: int, origin_port: int) -
                                    timeout=2.0, probe_url=probe)
 
     routed_through_proxy = any(h["via"] == "forward-proxy" for h in OriginHandler.hits)
-    ok = ok_live and dead is None and routed_through_proxy
+    ok = ok_live and dead is None and routed_through_proxy and tcp_only
     _record(
         "validate_proxy separates TCP from HTTP, through a real proxy",
         ok,
         f"live ok={ok_live} status={live and live.get('status')}, "
-        f"dead={dead}, origin saw proxy hop={routed_through_proxy}",
+        f"dead={dead}, tcp-only={tcp_only}, "
+        f"origin saw proxy hop={routed_through_proxy}",
     )
 
 
