@@ -21,6 +21,14 @@ Only text between `<!-- generated:<name> -->` and `<!-- /generated:<name> -->`
 is touched. Anything outside is human-owned and never rewritten.
 
 Stdlib only.
+
+Rules enforced — see the `gate:` convention below this docstring:
+
+gate: skills-inventory-current: the AGENTS.md skills table matches skills/ [required]
+gate: catalog-matches-source: the free-catalog table matches providers.json [required]
+gate: test-counts-current: the test-results table matches pytest collection [required]
+gate: gates-declare-rules: every registered gate declares its rules in its header [required]
+
 """
 
 from __future__ import annotations
@@ -179,10 +187,108 @@ def _collect_counts(files: list[Path]) -> dict[str, int]:
     return counts
 
 
+# ── gate rules ─────────────────────────────────────────────────────────────
+# A check is only as good as the rule it enforces, and rules get deleted quietly
+# — `ci-check.sh` is a script whose two halves have very different risk profiles,
+# and the audit that recommended deleting "it" was reading a catch count taken
+# against the whole file. This block makes the rule set visible and CI-checkable:
+# every gate declares its rules in its own header, so removing one produces a diff
+# in a generated table rather than an edit nobody reviews.
+#
+# Declaration, identical in Python and shell headers:
+#
+#     # gate: <kebab-case-id>: <what this rule protects> [required]
+#
+# `[required]` marks a rule whose removal must be argued explicitly — the table
+# records which they are, and a deletion cannot be silent because the row moves.
+# Accepts both forms: a `#` comment in a shell/Python header, and a bare line
+# inside a module docstring (Python gates declare there, next to the prose
+# that already explains them).
+GATE_DECL_RE = re.compile(
+    r"^\s*(?:#\s*)?gate:\s*([a-z0-9][a-z0-9-]*):\s*(.+?)\s*(\[required\])?\s*$"
+)
+
+# Registry, not discovery. A gate is a decision, not a file extension: these are
+# the scripts whose failure blocks a merge. Adding a script here is the act of
+# making it a gate, and the renderer then demands that it declares its rules.
+GATES = (
+    (".github/scripts/ci-check.sh", "Protocol escalation + credential guard"),
+    (".github/scripts/check-skills.py", "Skill packaging and citations"),
+    (".github/scripts/check-swallows.py", "Silent exception handlers"),
+    ("scripts/gen-architecture.py", "Architecture map drift"),
+    ("scripts/gen-docs.py", "Generated documentation drift"),
+    ("scripts/runtime-check.py", "Component wiring"),
+    ("scripts/verify-skills-lock.py", "Vendored skill provenance"),
+)
+
+
+def declared_rules(path: Path) -> list[tuple[str, str, bool]]:
+    """[(id, description, required)] declared in a gate script's header."""
+    rules: list[tuple[str, str, bool]] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return rules
+    for line in text.splitlines():
+        match = GATE_DECL_RE.match(line)
+        if match:
+            rules.append((match.group(1), match.group(2), bool(match.group(3))))
+    return rules
+
+
+def render_gates() -> str:
+    rows: list[str] = []
+    undeclared: list[str] = []
+    for rel, purpose in GATES:
+        path = ROOT / rel
+        rules = declared_rules(path)
+        if not path.is_file():
+            undeclared.append(f"{rel} (registry lists it, file is missing)")
+            continue
+        if not rules:
+            undeclared.append(f"{rel} (no `# gate:` declaration)")
+            continue
+        rows.append((rel, purpose, rules))
+
+    if undeclared:
+        # Failing here is the point: a gate with no declared rules is a gate
+        # nobody can review, which is how a script-wide catch count gets mistaken
+        # for a rule-level decision.
+        raise SystemExit(
+            "Every registered gate must declare its rules in its header "
+            "(`# gate: <id>: <what it protects> [required]`).\n  "
+            + "\n  ".join(undeclared)
+        )
+
+    total_required = sum(1 for _, _, rules in rows for _, _, req in rules if req)
+    out = [
+        f"<!-- generated:gates ({len(rows)} gates, "
+        f"{sum(len(r[2]) for r in rows)} rules, {total_required} required) -->",
+        "",
+        "| Gate | Rule | Protects | Required |",
+        "|------|------|----------|----------|",
+    ]
+    for rel, _purpose, rules in rows:
+        for rule_id, description, required in rules:
+            name = rule_id if required else f"_{rule_id}_"
+            out.append(
+                f"| `{rel}` | {name} | {description} | {'yes' if required else 'advisory'} |"
+            )
+    out.append("")
+    out.append(
+        "Generated from each script's header by `scripts/gen-docs.py`. Delete a "
+        "rule and its row disappears from this table — which is why removal shows "
+        "up in review instead of in a catch count."
+    )
+    out.append("<!-- /generated:gates -->")
+    return "\n".join(out)
+
+
 BLOCKS = {
     "skills": render_skills,
     "catalog": render_catalog,
     "tests": render_tests,
+    "gates": render_gates,
 }
 
 
