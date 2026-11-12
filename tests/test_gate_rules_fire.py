@@ -256,6 +256,40 @@ def test_downward_edge_is_allowed() -> None:
     assert not any("upward edge" in p for p in problems), problems
 
 
+# ── line arithmetic near the top of a file ─────────────────────────────────
+# ci-check.sh computed a negative sed window for escalations on line <= 5,
+# which sed parsed as an option: justified escalations scored 0/4 and blocked
+# merges. check-swallows.py computes the same kind of window, so its near-top
+# behaviour is pinned here rather than assumed.
+def _swallow_case(src: str) -> int:
+    import tempfile
+    original_root = check_swallows.ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        check_swallows.ROOT = root
+        path = root / "t.py"
+        path.write_text(src, encoding="utf-8")
+        try:
+            return len(check_swallows.scan(path)[0])
+        finally:
+            check_swallows.ROOT = original_root
+
+
+def test_marker_on_except_line_near_top_passes() -> None:
+    src = "try:\n    x = 1\nexcept Exception:  # swallow: deliberate\n    pass\n"
+    assert _swallow_case(src) == 0
+
+
+def test_marker_inside_handler_near_top_passes() -> None:
+    src = "try:\n    x = 1\nexcept Exception:\n    # swallow: deliberate\n    pass\n"
+    assert _swallow_case(src) == 0
+
+
+def test_blanket_except_at_line_two_still_fires() -> None:
+    src = "try:\n    x = 1\nexcept Exception:\n    pass\n"
+    assert _swallow_case(src) == 1
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

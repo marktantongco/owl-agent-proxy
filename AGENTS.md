@@ -1547,7 +1547,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_docs_generator.py` | 8 | the table generator (proves a stale table fails) |
 | `tests/test_free_catalog.py` | 24 | catalog loading, routes, paid-vendor filter |
 | `tests/test_gate_declarations.py` | 13 | — |
-| `tests/test_gate_rules_fire.py` | 11 | — |
+| `tests/test_gate_rules_fire.py` | 14 | — |
 | `tests/test_gateway.py` | 22 | auth, circuit breaker, cache, billing, router |
 | `tests/test_mcp_server.py` | 118 | JSON-RPC framing, all tools, stdout purity, real stdio subprocess |
 | `tests/test_memory_backend.py` | 46 | SQLite memory backend, FTS, cross-process lock |
@@ -1557,10 +1557,11 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_reverse_proxy.py` | 41 | ingress, circuit breaker, load balancing, stealth mode |
 | `tests/test_skills_citations.py` | 10 | — |
 | `tests/test_skills_lock.py` | 7 | — |
+| `tests/test_skills_lock_update.py` | 5 | — |
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 644 tests**, all offline and hermetic.
+**Total: 652 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
@@ -1629,7 +1630,7 @@ This exists because a script-wide catch count was once used to recommend deletin
 `ci-check.sh`, when one of its two rules is a credential scanner with no
 substitute. Argue per rule, not per script.
 
-<!-- generated:gates (7 gates, 24 rules, 23 required, 23 probed) -->
+<!-- generated:gates (7 gates, 24 rules, 23 required, 24 probed) -->
 
 | Gate | Rule | Protects | Required | Evidence |
 |------|------|----------|----------|----------|
@@ -1656,7 +1657,7 @@ substitute. Argue per rule, not per script.
 | `scripts/runtime-check.py` | breaker-opens-then-closes | the circuit breaker opens at threshold and closes on success | yes | `scripts/runtime-check.py --check` |
 | `scripts/verify-skills-lock.py` | vendored-files-present | every lock entry's vendoredPath exists | yes | `tests/test_skills_lock.py` |
 | `scripts/verify-skills-lock.py` | vendored-bytes-match-pin | vendored content matches the pinned upstream commit, unless a localModification is declared | yes | `tests/test_skills_lock.py` |
-| `scripts/verify-skills-lock.py` | lock-is-checkable | --update must be able to record a verifiable hash | yes | — |
+| `scripts/verify-skills-lock.py` | lock-is-checkable | --update must be able to record a verifiable hash | yes | `tests/test_skills_lock_update.py` |
 
 Generated from each script's header by `scripts/gen-docs.py`. Delete a rule and its row disappears from this table — which is why removal shows up in review instead of in a catch count. An `—` in Evidence means no test proves that rule fires: it is a claim, not yet a gate.
 

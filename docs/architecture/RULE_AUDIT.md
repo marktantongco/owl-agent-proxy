@@ -227,3 +227,55 @@ happened to be caused by a bug.
 `lock-is-checkable`, and — more broadly — whether any of the 23 probed rules
 would still fire if their implementation were subtly changed. The probes assert
 the rules fire today; they are not exhaustive about every path through each rule.
+
+---
+
+# Second follow-up: the last gap, and the sweep that found nothing
+
+**Date:** 2026-11-12
+
+## `lock-is-checkable` — now probed
+
+The only rule still carrying a `—`. `tests/test_skills_lock_update.py` runs
+`update()` with the two network calls replaced by deterministic fakes, then
+verifies the lock it produced. That is the rule's exact claim, and it is the
+claim v1 of `skills-lock.json` failed: hashes that matched no upstream revision
+and no normalisation of one, so the file looked authoritative and verified
+against nothing.
+
+Five probes, mutation-checked:
+
+| Mutation | Result |
+|---|---|
+| `--update` writes a constant hash (the v1 bug) | **2 probes fail**, `hash does not verify` |
+| `--update` stops pinning the fetched commit | 1 probe fails |
+
+State: **7 gates, 24 rules, 23 required, 24 probed.** No `—` remains.
+
+## The line-arithmetic sweep — negative result
+
+The ci-check defect (negative `sed` window for escalations at line ≤ 5) invited
+the obvious question: does the same off-by-one class exist elsewhere? Three
+sites compute an index from a line number:
+
+| Site | Guard | Verdict |
+|---|---|---|
+| `ci-check.sh:50` | none — `lineno - 5` | **was broken, fixed** |
+| `check-swallows.py:80` `has_marker` | `range(handler.lineno - 1, ...)`; `ast` line numbers are ≥ 1, so the start is ≥ 0 | correct |
+| `check-swallows.py:129` dict-protocol context | `max(0, node.lineno - 4)` | correct |
+
+Probed directly rather than read: markers on the `except` line at the top of a
+file, markers inside the handler body, blanket handlers at line 2, and dict
+protocols on line 1. All behaved correctly.
+
+**Recording the negative result matters.** Three of this session's four wrong
+claims were wrong in the direction of "there is a problem" when there was not, or
+"there is no problem" when there was. A sweep that finds nothing is only useful
+if it is written down — otherwise the next reader runs it again.
+
+## What is now unfalsified rather than proved
+
+Every rule has a probe that shows it fires today. None of them shows that a rule
+would fire if its *implementation* were subtly changed in a way the probe does
+not exercise. Mutation testing covers the two cases above; extending it to all 24
+rules would be a much larger change than this session justified.
