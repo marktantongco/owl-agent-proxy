@@ -7,7 +7,7 @@ set -euo pipefail
 # Rules enforced (generated into AGENTS.md by scripts/gen-docs.py; see the
 # "gate:" convention at the top of gen-docs.py):
 #
-# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required] [probe: tests/test_gate_rules_fire.py]
+# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required] [probe: tests/test_gate_rules_fire.py] [probe: tests/test_ci_check_scoring.py]
 # gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required] [probe: tests/test_ci_check_credentials.py]
 
 ERRORS=0
@@ -78,11 +78,25 @@ check_protocol_escalation() {
             continue
         fi
 
+        # Each signal is word-bounded. Unbounded `ms` matched systems, problems,
+        # items, params, terms, forms, claims and algorithms, so ordinary prose
+        # scored a point -- enough to turn a blocking 1/4 into a passing 2/4.
+        # `approved` and `tested` were worse: unapproved, untested and "not yet
+        # approved" all scored, so a comment saying the change was NOT approved
+        # justified itself. The prose cannot be allowed to invent the evidence.
         local score=0
-        echo "$context" | grep -qiE 'http/1\.1|http1|baseline' && score=$((score + 1))
-        echo "$context" | grep -qiE 'cloudflare|datadome|akamai|anti.bot' && score=$((score + 1))
-        echo "$context" | grep -qiE 'latency|ms|benchmark|tested' && score=$((score + 1))
-        echo "$context" | grep -qiE 'approved|APPROVED' && score=$((score + 1))
+        echo "$context" | grep -qiE '\b(http/1\.1|http1|baseline)\b' && score=$((score + 1))
+        echo "$context" | grep -qiE '\b(cloudflare|datadome|akamai|anti-?bot)\b' && score=$((score + 1))
+        if echo "$context" | grep -qiE '\b([0-9]+(\.[0-9]+)?|one|two|three|five|ten|twenty|fifty|hundred)[[:space:]]*ms\b' \
+           || echo "$context" | grep -qiE '\b(latency|benchmark|measured)\b' \
+           || { echo "$context" | grep -qiE '\btested\b' \
+                && ! echo "$context" | grep -qiE '\buntested\b|\bnot[[:space:]]+tested\b'; }; then
+            score=$((score + 1))
+        fi
+        if echo "$context" | grep -qiE '\bapproved\b' \
+           && ! echo "$context" | grep -qiE '\bunapproved\b|\bnot[[:space:]]+(yet[[:space:]]+)?approved\b'; then
+            score=$((score + 1))
+        fi
 
         if [ "$score" -ge 3 ]; then
             log_ok "$file:$lineno — Justified (score: $score/4)"

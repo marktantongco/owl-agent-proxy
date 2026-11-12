@@ -92,6 +92,26 @@ def test_probed_count_appears_in_the_header() -> None:
     assert "2 rules, 2 required, 1 probed" in out, out.splitlines()[0]
 
 
+def test_description_stops_at_the_first_bracket() -> None:
+    """A second [probe:] was being absorbed into the description.
+
+    `# gate: r: does X [required] [probe: a.py] [probe: b.py]` rendered with
+    "[probe: a.py]" glued onto the prose and b.py credited. Both must be
+    evidence and neither may leak into the description.
+    """
+    body = "# gate: r: does X [required] [probe: tests/a.py] [probe: tests/b.py]\n"
+    with with_gates({"g.py": body}) as gen:
+        rules = gen.declared_rules(gen.ROOT / "g.py")
+    assert rules == [("r", "does X", True, "tests/a.py, tests/b.py")], rules
+
+
+def test_multiple_probes_all_render() -> None:
+    body = "# gate: r: does X [required] [probe: tests/a.py] [probe: tests/b.py]\n"
+    with with_gates({"g.py": body}) as gen:
+        out = gen.render_gates()
+    assert "tests/a.py" in out and "tests/b.py" in out, out
+
+
 def test_render_includes_every_rule() -> None:
     files = {"a.py": "# gate: alpha: protects A [required]\n",
              "b.py": "# gate: beta: protects B\n"}

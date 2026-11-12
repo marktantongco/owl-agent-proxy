@@ -279,3 +279,90 @@ Every rule has a probe that shows it fires today. None of them shows that a rule
 would fire if its *implementation* were subtly changed in a way the probe does
 not exercise. Mutation testing covers the two cases above; extending it to all 24
 rules would be a much larger change than this session justified.
+
+---
+
+# Third follow-up: CHECK 1's evidence was a word game
+
+**Date:** 2026-11-12
+
+With CHECK 1 already in the changelog as "the check rejects justifications it
+cannot see", it was worth asking the opposite question: can it accept
+justifications it should not?
+
+It could. The four scoring signals were unbounded regular expressions matched
+against free text:
+
+| Signal | Regex | Also matched |
+|---|---|---|
+| latency | `latency\|ms\|benchmark\|tested` | **system**s, proble**ms**, ite**ms**, para**ms**, ter**ms**, for**ms**, clai**ms**, algorith**ms** |
+| approval | `approved\|APPROVED` | **unapproved**, **not yet approved** |
+| testing | `tested` | **untested**, **not tested** |
+
+So this comment scored:
+
+```python
+# Approved by ops; this assumes the systems are stable.
+CLIENT = build(protocol="ja3")
+```
+
+`approved` gave one point, and `assumes` / `systems` gave another. **2/4 — and
+`WARN` does not fail the build.** Without the prose it is 1/4 and blocks. The
+prose was not merely uninformative; it was load-bearing.
+
+The negation case is the sharper one. `# Not yet approved.` scored an approval
+point. A comment stating that a change was **not** approved counted as the
+approval.
+
+## Fix
+
+Word boundaries on all four, plus negation guards on the two that can be
+negated:
+
+```bash
+echo "$context" | grep -qiE '\b([0-9]+(\.[0-9]+)?|...)[[:space:]]*ms\b' \
+  || echo "$context" | grep -qiE '\b(latency|benchmark|measured)\b' \
+  || { echo "$context" | grep -qiE '\btested\b' \
+       && ! echo "$context" | grep -qiE '\buntested\b|\bnot[[:space:]]+tested\b'; }
+```
+
+`ms` is deliberately narrow — a number followed by `ms`, or the words
+latency/benchmark/measured. `one ms`, `40ms` and `1.5 ms` all still count.
+
+## What the fix broke, and why that matters
+
+Tightening the regex dropped `proxy_defense.py:1983` from 3/4 to 2/4 — a
+**new warning on a site that had been passing**. Cause: `tested` is a
+legitimate evidence word, and I had replaced the whole signal with
+latency-shaped alternatives instead of anchoring it. Restored with a negation
+guard. The site is back to its honest score.
+
+A pass-to-fail change is worth chasing even when it is "only" a warning: it is
+the only signal that the edit changed meaning rather than tightening it.
+
+## Probes
+
+`tests/test_ci_check_scoring.py` — 6 cases. Each writes a two-line file into a
+temp directory and reads the verdict, so nothing in the repo is touched and no
+`# no-escalation:` marker is needed for the fixtures *inside* the script.
+
+Mutation-checked:
+
+| Mutation | Result |
+|---|---|
+| restore the original unbounded signals | `test_one_signal_plus_prose_does_not_pass` fails |
+| keep word boundaries, drop the negation guards | `test_negations_do_not_count_as_approval` fails |
+
+The second mutation was **not caught on the first attempt**. The negation probes
+used single-signal comments, which score ≤1 with or without a guard, so removing
+the guard changed nothing. Each negation case now pairs the negation with one
+genuine signal — with the guard 1/4 blocks, without it 2/4 passes. A probe that
+passes in both the fixed and broken state is not a probe.
+
+## Also fixed: the `[probe:]` parser ate a second probe
+
+Declaring two probes on one rule rendered the description as
+`... carries a stated reason [probe: tests/test_gate_rules_fire.py]` — the first
+probe was absorbed into the prose and the second was the only one credited. The
+regex now stops the description at the first bracket and collects every tagged
+probe. Two self-tests pin it.

@@ -27,6 +27,11 @@ jobs:
       # file breaks each one on purpose: if a rule stops firing, this fails.
       - name: Gate rules actually fire
         run: python tests/test_gate_rules_fire.py
+      # CHECK 1 scores free-text comments, so its signals are guessable by prose.
+      # These probes pin that "ms" is not latency evidence and that a negation
+      # cannot justify itself.
+      - name: Escalation scoring cannot be satisfied by prose
+        run: python tests/test_ci_check_scoring.py
       # `lock-is-checkable` is the rule behind skills-lock v1 being unverifiable.
       # This runs --update against fake network calls and then verifies the
       # result, so "records a verifiable hash" is measured, not asserted.
