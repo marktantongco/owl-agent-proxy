@@ -89,7 +89,27 @@ check_protocol_escalation() {
 check_proxy_credentials() {
     echo "CHECK 2: Proxy Credential Security"
     local hardcoded
-    hardcoded=$(grep -rnE "${GREP_EXCLUDES[@]}" '://[^:]+:[^@]+@' --include="*.py" --include="*.js" --include="*.ts" --include="*.json" . 2>/dev/null | grep -v "proxy_pool.json" | grep -v "test_" || true)
+    # Scans every text format a credential can hide in, not just source files:
+    # a secret pasted into a shell script or a workflow is the same leak. The old
+    # version matched only *.py/*.js/*.ts/*.json and skipped any path containing
+    # "test_" — while the rule claimed "anywhere in the tree". Probed: a
+    # `https://user:pass@host` in a .sh or .yml file passed clean.
+    #
+    # No path is excluded for being a test or a doc. Those files legitimately
+    # contain fake creds, so they opt out the same way everything else does:
+    #   - obvious placeholders (YOUR_USERNAME, example.com, pass1, ...) are ignored
+    #   - otherwise the line carries `# cred-ok: <reason>`
+    # A blanket `grep -v test_` is what let the original gap stay invisible.
+    # cred-ok: this is the detection pattern, not a credential
+    hardcoded=$(grep -rnE "${GREP_EXCLUDES[@]}" '://[^:/@[:space:]]+:[^@[:space:]]+@' \
+        --include="*.py" --include="*.js" --include="*.ts" --include="*.json" \
+        --include="*.sh" --include="*.yml" --include="*.yaml" --include="*.toml" \
+        --include="*.cfg" --include="*.ini" \
+        . 2>/dev/null \
+        | grep -v 'config/proxy_pool.template.json' \
+        | grep -v 'proxy_pool.json' \
+        | grep -vE '://(YOUR|your|USER|user|USERNAME|user1|user2|embedded|FAKE|fake|test)[^@]*@' \
+        | grep -viE '@(proxy\.)?example\.(com|org|test)|@(host|proxy|localhost)(:[0-9]+)?([/"'"'"'[:space:]]|$)' || true)
 
     if [ -z "$hardcoded" ]; then
         log_ok "No hardcoded proxy credentials"
@@ -97,6 +117,16 @@ check_proxy_credentials() {
     fi
 
     while IFS= read -r line; do
+        # Opt-out check looks at the line and the one above it, because the
+        # pattern in this script has to be able to match itself.
+        local file lineno
+        file=$(echo "$line" | cut -d: -f1)
+        lineno=$(echo "$line" | cut -d: -f2)
+        if echo "$line" | grep -q 'cred-ok:' \
+           || sed -n "$((lineno-1))p" "$file" 2>/dev/null | grep -q 'cred-ok:'; then
+            log_ok "$file:$lineno — opted out (cred-ok)"
+            continue
+        fi
         log_err "Hardcoded credentials: $line"
     done <<< "$hardcoded"
 }

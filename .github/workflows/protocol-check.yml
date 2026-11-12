@@ -18,6 +18,11 @@ jobs:
       - run: |
           chmod +x .github/scripts/ci-check.sh
           .github/scripts/ci-check.sh
+      # The credential rule claimed "anywhere in the tree" while scanning four
+      # extensions and skipping any path containing `test_`. These tests pin the
+      # widened scope so it cannot narrow again.
+      - name: Credential rule self-tests (must catch a .sh and a test_-named file)
+        run: python tests/test_ci_check_credentials.py
       - name: No broad exception handler swallows silently
         run: python .github/scripts/check-swallows.py
 

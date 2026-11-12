@@ -1543,6 +1543,7 @@ run separately by `scripts/verify-install.py`.
 | Test file | Tests | Covers |
 |-----------|-------|--------|
 | `tests/test_architecture_check.py` | 6 | the drift detector itself (proves it detects) |
+| `tests/test_ci_check_credentials.py` | 12 | — |
 | `tests/test_docs_generator.py` | 8 | the table generator (proves a stale table fails) |
 | `tests/test_free_catalog.py` | 24 | catalog loading, routes, paid-vendor filter |
 | `tests/test_gate_declarations.py` | 10 | — |
@@ -1558,7 +1559,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 618 tests**, all offline and hermetic.
+**Total: 630 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
