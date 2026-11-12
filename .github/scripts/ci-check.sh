@@ -7,8 +7,8 @@ set -euo pipefail
 # Rules enforced (generated into AGENTS.md by scripts/gen-docs.py; see the
 # "gate:" convention at the top of gen-docs.py):
 #
-# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required]
-# gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required]
+# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required] [probe: tests/test_gate_rules_fire.py]
+# gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required] [probe: tests/test_ci_check_credentials.py]
 
 ERRORS=0
 WARNINGS=0
@@ -40,8 +40,16 @@ check_protocol_escalation() {
         file=$(echo "$line" | cut -d: -f1)
         local lineno
         lineno=$(echo "$line" | cut -d: -f2)
-        local context
-        context=$(sed -n "$((lineno-5)),$((lineno-1))p" "$file" 2>/dev/null || true)
+        local context start
+        # Clamp the window. Without this, an escalation on line <= 5 computes a
+        # negative start and `sed -n "-2,2p"` is parsed as an *option*, so sed
+        # errors and context comes back empty — a fully justified escalation near
+        # the top of a file scored 0/4 and blocked the merge. This is the real
+        # source of the "false positives that blocked merges for three days";
+        # it was arithmetic, not the scoring heuristic.
+        start=$(( lineno - 5 ))
+        [ "$start" -lt 1 ] && start=1
+        context=$(sed -n "${start},$((lineno-1))p" "$file" 2>/dev/null || true)
 
         # Bookkeeping exemption. A protocol name may legitimately appear without
         # escalating anything: as a cache key, a dataclass field, or inside a

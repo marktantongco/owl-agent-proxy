@@ -44,11 +44,11 @@ Exit codes: 0 all passed, 1 a check failed, 2 the harness could not start.
 
 Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
 
-gate: seam-state-isolation: a harvester that declares one source inherits no other's health [required]
-gate: probe-separates-tcp-from-http: a dead proxy reports TCP failure, not HTTP failure [required]
-gate: harness-proxy-is-pinned: the check's own forward proxy dials one fixed loopback origin [required]
-gate: affinity-sticky-then-expires: a binding is stable until TTL, then gone [required]
-gate: breaker-opens-then-closes: the circuit breaker opens at threshold and closes on success [required]
+gate: seam-state-isolation: a harvester that declares one source inherits no other's health [required] [probe: scripts/runtime-check.py --check]
+gate: probe-separates-tcp-from-http: a dead proxy reports TCP failure, not HTTP failure [required] [probe: scripts/runtime-check.py --check]
+gate: harness-proxy-is-pinned: the check's own forward proxy dials one fixed loopback origin [required] [probe: scripts/runtime-check.py --check]
+gate: affinity-sticky-then-expires: a binding is stable until TTL, then gone [required] [probe: scripts/runtime-check.py --check]
+gate: breaker-opens-then-closes: the circuit breaker opens at threshold and closes on success [required] [probe: scripts/runtime-check.py --check]
 """
 from __future__ import annotations
 
