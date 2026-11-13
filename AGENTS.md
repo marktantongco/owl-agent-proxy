@@ -1544,9 +1544,10 @@ run separately by `scripts/verify-install.py`.
 |-----------|-------|--------|
 | `tests/test_architecture_check.py` | 6 | the drift detector itself (proves it detects) |
 | `tests/test_ci_check_credentials.py` | 12 | — |
+| `tests/test_ci_check_scoring.py` | 6 | — |
 | `tests/test_docs_generator.py` | 8 | the table generator (proves a stale table fails) |
 | `tests/test_free_catalog.py` | 24 | catalog loading, routes, paid-vendor filter |
-| `tests/test_gate_declarations.py` | 13 | — |
+| `tests/test_gate_declarations.py` | 15 | — |
 | `tests/test_gate_rules_fire.py` | 14 | — |
 | `tests/test_gateway.py` | 22 | auth, circuit breaker, cache, billing, router |
 | `tests/test_mcp_server.py` | 118 | JSON-RPC framing, all tools, stdout purity, real stdio subprocess |
@@ -1561,7 +1562,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 652 tests**, all offline and hermetic.
+**Total: 660 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
@@ -1634,7 +1635,7 @@ substitute. Argue per rule, not per script.
 
 | Gate | Rule | Protects | Required | Evidence |
 |------|------|----------|----------|----------|
-| `.github/scripts/ci-check.sh` | protocol-escalation-justified | an escalated protocol at a call site carries a stated reason | yes | `tests/test_gate_rules_fire.py` |
+| `.github/scripts/ci-check.sh` | protocol-escalation-justified | an escalated protocol at a call site carries a stated reason | yes | `tests/test_gate_rules_fire.py, tests/test_ci_check_scoring.py` |
 | `.github/scripts/ci-check.sh` | proxy-credentials-not-committed | no hardcoded user:password@ proxy URL anywhere in the tree | yes | `tests/test_ci_check_credentials.py` |
 | `.github/scripts/check-skills.py` | skill-frontmatter-valid | every skills/<name>/SKILL.md declares name and description, kebab-case, matching its directory, name <= 64 chars, description 20-1024 chars | yes | `tests/test_gate_rules_fire.py` |
 | `.github/scripts/check-skills.py` | cited-skills-exist | no document cites a skill path that resolves to no directory | yes | `tests/test_skills_citations.py` |

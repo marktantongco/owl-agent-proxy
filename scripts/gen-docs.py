@@ -207,10 +207,16 @@ def _collect_counts(files: list[Path]) -> dict[str, int]:
 # `[required]` marks a rule whose removal must be argued explicitly. `[probe: X]`
 # names the test that proves the rule fires — a rule without one is a claim, and
 # the table should say so rather than leave the column blank and unremarked.
+# `# gate: <id>: <description> [required] [probe: tests/a.py] [probe: tests/b.py]`
+# A rule may cite more than one probe. The description stops at the first
+# bracket so a second `[probe:]` cannot be absorbed into the prose -- that
+# happened, and the table silently credited one file while hiding the other.
 GATE_DECL_RE = re.compile(
-    r"^\s*(?:#\s*)?gate:\s*([a-z0-9][a-z0-9-]*):\s*(.+?)"
-    r"(?:\s*\[required\])?(?:\s*\[probe:\s*([^\]]+)\])?\s*$"
+    r"^\s*(?:#\s*)?gate:\s*([a-z0-9][a-z0-9-]*):\s*"
+    r"(?P<desc>(?:[^\[\n]|\[(?!required\]|probe:)[^\]]*\])*)"
+    r"(?P<tags>(?:\s*\[(?:required|probe:[^\]]+)\])*)\s*$"
 )
+PROBE_TAG_RE = re.compile(r"\[probe:\s*([^\]]+)\]")
 
 # Registry, not discovery. A gate is a decision, not a file extension: these are
 # the scripts whose failure blocks a merge. Adding a script here is the act of
@@ -227,7 +233,12 @@ GATES = (
 
 
 def declared_rules(path: Path) -> list[tuple[str, str, bool, str | None]]:
-    """[(id, description, required, probe)] declared in a gate script's header."""
+    """[(id, description, required, probes)] declared in a gate script's header.
+
+    `probes` is a comma-joined string of every cited probe, or None. One rule may
+    need two probes -- `protocol-escalation-justified` needs one proving the gate
+    fires and one proving its scoring cannot be satisfied by prose.
+    """
     rules: list[tuple[str, str, bool, str | None]] = []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -236,12 +247,10 @@ def declared_rules(path: Path) -> list[tuple[str, str, bool, str | None]]:
     for line in text.splitlines():
         match = GATE_DECL_RE.match(line)
         if match:
-            # `[required]` may appear before or after `[probe:]`; the regex takes
-            # them in that order, so a probe written first is recovered below.
-            probe = match.group(3)
-            required = "[required]" in line
-            rules.append((match.group(1), match.group(2).strip(), required,
-                          probe.strip() if probe else None))
+            probes = [p.strip() for p in PROBE_TAG_RE.findall(match.group("tags"))]
+            required = "[required]" in match.group("tags")
+            rules.append((match.group(1), " ".join(match.group("desc").split()),
+                          required, ", ".join(probes) if probes else None))
     return rules
 
 
