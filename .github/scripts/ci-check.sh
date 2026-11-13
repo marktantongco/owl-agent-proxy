@@ -76,8 +76,13 @@ check_protocol_escalation() {
         # to exempt a line, which made the marker a switch rather than a
         # justification. `[^ ]` requires at least one non-space character after
         # the colon. Every existing marker in the tree already carries a reason.
+        #
+        # The opt-out reads the line and the one above it -- the same reach as
+        # CHECK 2's `# cred-ok:`. It used to match anywhere in `$context` (five
+        # lines), so a marker written about one line exempted a different one
+        # four lines later.
         if echo "$line" | grep -qE '# no-escalation:[[:space:]]*[^[:space:]]' \
-           || echo "$context" | grep -qE '# no-escalation:[[:space:]]*[^[:space:]]'; then
+           || sed -n "$((lineno-1))p" "$file" 2>/dev/null | grep -qE '# no-escalation:[[:space:]]*[^[:space:]]'; then
             log_ok "$file:$lineno — opted out inline"
             continue
         fi
