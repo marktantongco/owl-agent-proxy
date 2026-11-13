@@ -37,6 +37,11 @@ jobs:
       # result, so "records a verifiable hash" is measured, not asserted.
       - name: Lock update records a verifiable hash
         run: python tests/test_skills_lock_update.py
+      # All three self-exemption markers are documented as requiring a reason.
+      # All three accepted a bare marker, so anyone hitting a gate could switch
+      # it off with a comment and no justification. These probes hold the line.
+      - name: Opt-out markers require a reason
+        run: python tests/test_opt_out_markers.py
       - name: No broad exception handler swallows silently
         run: python .github/scripts/check-swallows.py
 

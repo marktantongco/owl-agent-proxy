@@ -7,8 +7,8 @@ set -euo pipefail
 # Rules enforced (generated into AGENTS.md by scripts/gen-docs.py; see the
 # "gate:" convention at the top of gen-docs.py):
 #
-# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason [required] [probe: tests/test_gate_rules_fire.py] [probe: tests/test_ci_check_scoring.py]
-# gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required] [probe: tests/test_ci_check_credentials.py]
+# gate: protocol-escalation-justified: an escalated protocol at a call site carries a stated reason, and its opt-out names one [required] [probe: tests/test_gate_rules_fire.py] [probe: tests/test_ci_check_scoring.py] [probe: tests/test_opt_out_markers.py]
+# gate: proxy-credentials-not-committed: no hardcoded user:password@ proxy URL anywhere in the tree [required] [probe: tests/test_ci_check_credentials.py] [probe: tests/test_opt_out_markers.py]
 
 ERRORS=0
 WARNINGS=0
@@ -72,8 +72,12 @@ check_protocol_escalation() {
         # 3. Explicit opt-out, same idiom as check-swallows.py's `# swallow:`.
         #    For a call site where naming a protocol escalates nothing, say why
         #    on the line: `# no-escalation: <reason>`.
-        if echo "$line" | grep -q '# no-escalation:' \
-           || echo "$context" | grep -q '# no-escalation:'; then
+        # The reason is required, not decorative: `# no-escalation:` alone used
+        # to exempt a line, which made the marker a switch rather than a
+        # justification. `[^ ]` requires at least one non-space character after
+        # the colon. Every existing marker in the tree already carries a reason.
+        if echo "$line" | grep -qE '# no-escalation:[[:space:]]*[^[:space:]]' \
+           || echo "$context" | grep -qE '# no-escalation:[[:space:]]*[^[:space:]]'; then
             log_ok "$file:$lineno — opted out inline"
             continue
         fi
@@ -144,8 +148,10 @@ check_proxy_credentials() {
         local file lineno
         file=$(echo "$line" | cut -d: -f1)
         lineno=$(echo "$line" | cut -d: -f2)
-        if echo "$line" | grep -q 'cred-ok:' \
-           || sed -n "$((lineno-1))p" "$file" 2>/dev/null | grep -q 'cred-ok:'; then
+        # Reason required here too; see the note on `# no-escalation:` above.
+        if echo "$line" | grep -qE 'cred-ok:[[:space:]]*[^[:space:]]' \
+           || sed -n "$((lineno-1))p" "$file" 2>/dev/null \
+              | grep -qE 'cred-ok:[[:space:]]*[^[:space:]]'; then
             log_ok "$file:$lineno — opted out (cred-ok)"
             continue
         fi
