@@ -27,7 +27,7 @@ Stdlib only. Exit 0 clean, 1 violations.
 
 Rules enforced — see scripts/gen-docs.py for the `gate:` convention:
 
-gate: no-blanket-silent-except: except Exception / bare except never swallows silently [required] [probe: tests/test_gate_rules_fire.py]
+gate: no-blanket-silent-except: except Exception / bare except never swallows silently without a reason [required] [probe: tests/test_gate_rules_fire.py] [probe: tests/test_opt_out_markers.py]
 gate: dict-chosen-protocol-declared: a protocol literal reaching a dict is reported like a keyword call [required] [probe: tests/test_gate_rules_fire.py]
 gate: narrow-handler-allowed: silence on a specific exception is reported but permitted [probe: tests/test_gate_rules_fire.py]
 """
@@ -35,6 +35,7 @@ gate: narrow-handler-allowed: silence on a specific exception is reported but pe
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -76,11 +77,16 @@ def is_broad(handler: ast.ExceptHandler) -> bool:
     return any(name in text for name in BROAD)
 
 
+# A bare `# swallow:` was accepted as a justification. The marker must name a
+# reason: at least one non-space character after the colon.
+MARKER_RE = re.compile(re.escape(MARKER) + r"\s*\S")
+
+
 def has_marker(lines: list[str], handler: ast.ExceptHandler) -> bool:
     start = handler.lineno - 1
     end = getattr(handler, "end_lineno", handler.lineno)
     # The comment may sit on the `except` line or anywhere inside the handler.
-    return any(MARKER in lines[i] for i in range(start, min(end, len(lines))))
+    return any(MARKER_RE.search(lines[i]) for i in range(start, min(end, len(lines))))
 
 
 def scan(path: Path) -> tuple[list[str], list[str]]:

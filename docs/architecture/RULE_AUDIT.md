@@ -366,3 +366,91 @@ Declaring two probes on one rule rendered the description as
 probe was absorbed into the prose and the second was the only one credited. The
 regex now stops the description at the first bracket and collects every tagged
 probe. Two self-tests pin it.
+
+---
+
+# Fourth follow-up: the escape hatches
+
+**Date:** 2026-11-13
+
+Three gates ship a marker that exempts a line from the gate's rule. All three
+are documented as `# <marker>: <reason>`:
+
+| Marker | Gate | Documented as |
+|---|---|---|
+| `# swallow:` | `check-swallows.py` | `<reason>` |
+| `# cred-ok:` | `ci-check.sh` CHECK 2 | `<reason>` |
+| `# no-escalation:` | `ci-check.sh` CHECK 1 | `<reason>` |
+
+The reason was never required. Measured:
+
+```
+# no-escalation:                      -> opted out inline
+# cred-ok:                            -> opted out (cred-ok)
+except Exception:  # swallow:         -> 0 violations
+```
+
+A marker with an optional reason is not an exemption with a justification. It is
+a switch that turns the rule off, and the person who hits the rule first is the
+person holding the switch.
+
+## Scope was not uniform either
+
+| Marker | How far it reaches | Verdict |
+|---|---|---|
+| `# swallow:` | the `except` line or the handler body | correct |
+| `# cred-ok:` | the line, or the line above | correct |
+| `# no-escalation:` | **anywhere in the preceding five lines** | too far |
+
+The five-line reach is a side effect: CHECK 1 reads a five-line window to score
+the justification, and the opt-out is tested against the same window. A marker
+written about one line therefore exempts a different one up to four lines later.
+Reproduced: a marker followed by four unrelated assignments and then an
+escalation passed as `opted out inline`.
+
+`# swallow:` was checked for the same class and does not have it — a marker on a
+narrow handler does not cover a broad handler below it.
+
+## Fix
+
+All three now require at least one non-space character after the colon:
+
+```python
+MARKER_RE = re.compile(re.escape(MARKER) + r"\s*\S")
+```
+
+```bash
+grep -qE '# no-escalation:[[:space:]]*[^[:space:]]'
+```
+
+Every existing marker in the tree already carried a reason, so nothing had to be
+rewritten — verified before changing the check, not after.
+
+## Probes
+
+`tests/test_opt_out_markers.py`, 13 cases: each marker required, each marker
+honoured with a reason, each bare marker rejected, and both scoping behaviours
+pinned (including the five-line reach, which is a decision on record now rather
+than an accident).
+
+Mutation-checked:
+
+| Mutation | Result |
+|---|---|
+| require a reason after `no-escalation:` | `test_no_escalation_without_a_reason_does_not_exempt` fails |
+| widen `cred-ok` to the whole preceding context | `test_cred_ok_is_scoped_to_the_next_line` fails |
+
+The first mutation initially *failed* the opposite way — the probes asserted the
+gap as current behaviour, so tightening them turned three tests red. That is the
+intended signal: a change to a documented contract has to be announced.
+
+## The pattern across five PRs
+
+| PR | Gate was green because |
+|---|---|
+| #50 | the rule was never run against a failing case |
+| #51 | the rule had no probe at all |
+| #52 | the rule's evidence was a word game |
+| #53 | the rule could be switched off with a comment |
+
+Each pass was real. None of them meant the gate worked.
