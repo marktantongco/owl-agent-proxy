@@ -98,6 +98,30 @@ def test_swallow_marker_without_a_reason_does_not_exempt() -> None:
     assert swallow_violations(src) == 1
 
 
+def test_swallow_dict_protocol_marker_requires_a_reason() -> None:
+    """The dict-protocol path in check-swallows.py was missed by the reason fix.
+
+    `scan_dict_protocols` tested `"# no-escalation:" in context`, so a bare
+    marker exempted a dict-chosen protocol even after the same marker was
+    tightened everywhere else. Found by auditing this repo's own gates rather
+    than by a test.
+    """
+    module = _load_swallows()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        path = root / "t.py"
+        try:
+            path.write_text('C = {"protocol": "ja3"}  # no-escalation:\n', encoding="utf-8")
+            bare = len(module.scan_dict_protocols(path))
+            path.write_text('C = {"protocol": "ja3"}  # no-escalation: fixture\n', encoding="utf-8")
+            with_reason = len(module.scan_dict_protocols(path))
+        finally:
+            module.ROOT = REPO
+    assert bare == 1, "bare marker still exempts a dict-chosen protocol"
+    assert with_reason == 0, "a reason no longer exempts"
+
+
 # ── ci-check.sh CHECK 2: # cred-ok: ────────────────────────────────────────
 def test_cred_ok_required_for_a_hardcoded_credential() -> None:
     assert ci_verdict([_CREDENTIAL]) == "Hardcoded credentials"
@@ -137,20 +161,22 @@ def test_no_escalation_without_a_reason_does_not_exempt() -> None:
     assert got.startswith("Missing justification"), got
 
 
-def test_no_escalation_is_scoped_to_five_lines() -> None:
-    """CHECK 1 reads a five-line window. A marker at the edge still exempts.
+def test_no_escalation_is_scoped_to_the_line_above() -> None:
+    """Same reach as CHECK 2's `# cred-ok:`: the line, or the line above.
 
-    This is looser than CHECK 2, which looks at one line above. Both are pinned
-    so the asymmetry is a decision on record rather than an accident.
+    It used to reach five lines up, because CHECK 1 tested the opt-out against
+    the five-line justification window. A marker written about one line could
+    therefore exempt a different one four lines later. Two CHECKs, two rules,
+    one reach.
     """
-    lines = ["# no-escalation: unrelated note"] + [f"x{i} = {i}" for i in range(4)]
-    lines.append(_ESCALATION.replace("  # no-escalation: PLACEHOLDER", ""))
+    lines = ["# no-escalation: reason", _ESCALATION.replace("  # no-escalation: PLACEHOLDER", "")]
     assert ci_verdict(lines) == "opted out inline"
 
 
-def test_no_escalation_beyond_the_window_does_not_exempt() -> None:
-    lines = ["# no-escalation: unrelated note"] + [f"x{i} = {i}" for i in range(5)]
-    lines.append(_ESCALATION.replace("  # no-escalation: PLACEHOLDER", ""))
+def test_no_escalation_does_not_reach_two_lines_up() -> None:
+    """A marker about a different line must not exempt this one."""
+    lines = ["# no-escalation: reason", "x = 1",
+             _ESCALATION.replace("  # no-escalation: PLACEHOLDER", "")]
     got = ci_verdict(lines)
     assert got.startswith("Missing justification"), got
 
