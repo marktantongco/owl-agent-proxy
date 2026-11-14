@@ -798,10 +798,11 @@ class TestHTTPCacheMore(unittest.TestCase):
     def test_cache_key_includes_protocol(self):
         async def run():
             cache = HTTPCache(ttl=300)
-            resp1 = CachedResponse(status=200, content=b"h1", headers={}, timestamp=time.time(), ttl=300, protocol="http/1.1")
-            # no-escalation: cache-key fixture. The protocol is a cache dimension
-            # here, proving the key mixes it in; no request is ever sent.
-            resp2 = CachedResponse(status=200, content=b"h2", headers={}, timestamp=time.time(), ttl=300, protocol="http/2")
+            # The protocol here is a cache dimension, not a network choice:
+            # proving the key mixes it in; no request is ever sent. The opt-out
+            # is per-line, so each call site carries its own.
+            resp1 = CachedResponse(status=200, content=b"h1", headers={}, timestamp=time.time(), ttl=300, protocol="http/1.1")  # no-escalation: cache-key fixture
+            resp2 = CachedResponse(status=200, content=b"h2", headers={}, timestamp=time.time(), ttl=300, protocol="http/2")  # no-escalation: cache-key fixture
             await cache.set("GET", "https://example.com", resp1)
             await cache.set("GET", "https://example.com", resp2)
             r1 = await cache.get("GET", "https://example.com")

@@ -454,3 +454,68 @@ intended signal: a change to a documented contract has to be announced.
 | #53 | the rule could be switched off with a comment |
 
 Each pass was real. None of them meant the gate worked.
+
+---
+
+# Fifth follow-up: the miss, the narrowing, and a contrarian test
+
+**Date:** 2026-11-13
+
+## A marker fix that missed a path
+
+PR #53 required a reason after every opt-out marker. It missed one:
+`check-swallows.py`'s **dict-protocol** path, which tested
+`"# no-escalation:" in context`. A bare marker still exempted a protocol chosen
+through a dict literal.
+
+Found by asking "where else does this string appear?" rather than by a test, and
+then found again by a probe written for exactly that path. The lesson is not
+subtle: **the same marker implemented in two files is one implementation and one
+copy, and I fixed the implementation.**
+
+## The window narrowed from five lines to one
+
+`# no-escalation:` used to reach five lines back — the same window CHECK 1 uses
+to score a justification, reused for the opt-out. It now reads the line and the
+line above, matching CHECK 2's `# cred-ok:`.
+
+This broke a real site, as predicted. Four things came out of chasing it:
+
+| Finding | Consequence |
+|---|---|
+| A two-line marker comment left the *second* line adjacent to the code | the marker must be the last line before the code it exempts |
+| Two escalations on consecutive lines, one marker | **the opt-out is per-line**: each call site needs its own |
+| Both were real escalations in `test_proxy_defense.py` | marked individually rather than weakening the check |
+| `resp1`/`resp2` still pass their tests | 182 passed |
+
+The pull was to widen the window back because a test broke. The window was
+correct; the marker placement was not.
+
+## Contrarian: delete the marker — tested, and rejected
+
+The standing Contrarian proposal was to delete `# no-escalation:` and the scoring
+heuristic with it. Measured before recommending:
+
+```
+site                          score without the marker
+test_gate_rules_fire.py       0/4   -> would be blocked
+test_ci_check_scoring.py      0/4   -> would be blocked
+test_proxy_defense.py:804     0/4   -> would be blocked
+test_proxy_defense.py:805     0/4   -> would be blocked
+```
+
+All four sites are fixtures whose protocol string never reaches the network.
+Deleting the marker would block them all, and the cheapest repair available to
+the next person is a fabricated `# Approved by ops.` — the exact behaviour Q3
+exists to detect.
+
+**The thesis was wrong.** The marker is load-bearing for legitimate code, and its
+problem was never existence; it was that a bare form worked. Keep the marker,
+require the reason, pin the reach.
+
+## What this thread actually established
+
+`docs/architecture/GATE_AUDIT_QUESTIONS.md` records the four questions that
+found every defect in this series, and the state of each gate against them. The
+questions do not reduce to a pass/fail, which is the point: a gate is green when
+someone last asked it something it could answer.

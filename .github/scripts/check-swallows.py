@@ -80,6 +80,9 @@ def is_broad(handler: ast.ExceptHandler) -> bool:
 # A bare `# swallow:` was accepted as a justification. The marker must name a
 # reason: at least one non-space character after the colon.
 MARKER_RE = re.compile(re.escape(MARKER) + r"\s*\S")
+# The same marker appears in ci-check.sh; a bare one must not exempt here
+# either. This path was missed when the marker was tightened everywhere else.
+NO_ESCALATION_RE = re.compile(r"# no-escalation:\s*\S")
 
 
 def has_marker(lines: list[str], handler: ast.ExceptHandler) -> bool:
@@ -135,7 +138,7 @@ def scan_dict_protocols(path: Path) -> list[str]:
             start = max(0, node.lineno - 4)
             end = getattr(node, "end_lineno", node.lineno)
             context = "\n".join(lines[start:end])
-            if MARKER in context or "# no-escalation:" in context:
+            if MARKER_RE.search(context) or NO_ESCALATION_RE.search(context):
                 continue
             violations.append(
                 f"{path.relative_to(ROOT)}:{value.lineno}: protocol chosen via dict "

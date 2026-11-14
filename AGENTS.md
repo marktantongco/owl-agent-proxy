@@ -1552,7 +1552,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_gateway.py` | 22 | auth, circuit breaker, cache, billing, router |
 | `tests/test_mcp_server.py` | 118 | JSON-RPC framing, all tools, stdout purity, real stdio subprocess |
 | `tests/test_memory_backend.py` | 46 | SQLite memory backend, FTS, cross-process lock |
-| `tests/test_opt_out_markers.py` | 13 | — |
+| `tests/test_opt_out_markers.py` | 14 | — |
 | `tests/test_pool_backend.py` | 8 | pool persistence backend |
 | `tests/test_proxy_defense.py` | 182 | cache, dedupe, rate limit, rotation, filter pipeline, middleware, protocols |
 | `tests/test_proxy_harvester.py` | 73 | source schemas, source health, affinity, honeypot hashing, probes |
@@ -1563,7 +1563,7 @@ run separately by `scripts/verify-install.py`.
 | `tests/test_stealth.py` | 23 | stealth rung gating and fingerprint profiles |
 | `tests/test_v71_integration.py` | 40 | sticky selection, quarantine, trimming, persistence, config merge |
 
-**Total: 673 tests**, all offline and hermetic.
+**Total: 674 tests**, all offline and hermetic.
 
 <!-- /generated:tests -->
 
