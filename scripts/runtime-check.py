@@ -49,6 +49,8 @@ gate: probe-separates-tcp-from-http: a dead proxy reports TCP failure, not HTTP 
 gate: harness-proxy-is-pinned: the check's own forward proxy dials one fixed loopback origin [required] [probe: scripts/runtime-check.py --check]
 gate: affinity-sticky-then-expires: a binding is stable until TTL, then gone [required] [probe: scripts/runtime-check.py --check]
 gate: breaker-opens-then-closes: the circuit breaker opens at threshold and closes on success [required] [probe: scripts/runtime-check.py --check]
+gate: unavailable-protocol-refused: an uninstalled protocol raises instead of sending http/1.1 under its label [required] [probe: scripts/runtime-check.py --check]
+gate: mcp-dispatch-over-jsonrpc: a tool call, an unknown tool and a notification behave correctly through handle() [required] [probe: scripts/runtime-check.py --check]
 """
 from __future__ import annotations
 
@@ -275,6 +277,68 @@ async def check_validate_through_real_proxy(proxy_port: int, origin_port: int) -
     )
 
 
+async def check_unavailable_protocol_is_not_mislabelled(origin_port: int) -> None:
+    """An unavailable protocol must not be silently downgraded *and relabelled*.
+
+    `ResilientClient.request` dispatches on `protocol == "x" and X_AVAILABLE`,
+    with a final `else: _request_http1(...)`. So when the optional dependency is
+    missing the request silently degrades to HTTP/1.1 — and then the line
+    `response.protocol = protocol` records the protocol that was *asked for*.
+
+    `_request_stealth` already refuses to do this, in a comment: "falling
+    through to http/1.1 would label an ordinary request 'stealth'". The same
+    argument applies to every optional branch, and nothing was checking.
+
+    This is the closest thing to load-bearing in the whole gate suite: a caller
+    that asks for ja3 and reads `response.protocol == "ja3"` will believe it
+    bypassed an anti-bot check when it sent a plain HTTP/1.1 request.
+    """
+    import proxy_defense as pd
+
+    requested = "ja3"
+    if pd.JA3_AVAILABLE:
+        _record(
+            "unavailable protocol is reported, not relabelled",
+            True,
+            "ja3 is installed here, so the downgrade path is not exercised",
+        )
+        return
+
+    OriginHandler.hits.clear()
+    # No upstream harvesting: this exercises dispatch and labelling only.
+    # `_session` is opened by the async context manager, not the constructor.
+    async with pd.ResilientClient(
+        auto_load_proxies=False, external_proxies=[]
+    ) as client:
+        try:
+            resp = await client.request(
+                "GET", f"http://127.0.0.1:{origin_port}/escalation", protocol=requested
+            )
+        except RuntimeError as exc:
+            # The honest outcome: refused rather than silently downgraded. The
+            # refusal must NOT have reached the origin — if it did, the request
+            # went out and the message is a lie.
+            refused_loudly = "not installed" in str(exc)
+            leaked = bool(OriginHandler.hits)
+            _record(
+                "unavailable protocol is reported, not relabelled",
+                refused_loudly and not leaked,
+                f"requested={requested} -> refused ({exc}); origin_reached={leaked}",
+            )
+            return
+
+    reached = bool(OriginHandler.hits)
+    recorded = getattr(resp, "protocol", None)
+    mislabelled = reached and recorded == requested
+
+    _record(
+        "unavailable protocol is reported, not relabelled",
+        not mislabelled,
+        f"requested={requested} recorded={recorded} origin_reached={reached} "
+        f"-> {'MISLABELLED: http/1.1 sent, reported as ja3' if mislabelled else 'honest'}",
+    )
+
+
 async def check_proxy_target_is_pinned(proxy_port: int, origin_port: int) -> None:
     """The test proxy must dial its pinned origin, never the host in the request.
 
@@ -302,6 +366,52 @@ async def check_proxy_target_is_pinned(proxy_port: int, origin_port: int) -> Non
         and reached[0]["via"] == "forward-proxy",
         f"request naming example.com -> {named_foreign}, "
         f"local origin sees {len(reached)} hop(s)",
+    )
+
+
+async def check_mcp_tool_dispatch_over_jsonrpc() -> None:
+    """A tool call must survive the real JSON-RPC path, not just `call_tool`.
+
+    `call_tool` was exercised directly in tests; `handle_one` — the layer that
+    parses the message, validates the method, dispatches and wraps the result —
+    had no end-to-end check. That layer is where a tool name can silently fall
+    through to "unknown tool", where a notification can be answered when it
+    should be dropped, and where an error can come back as a result.
+
+    Drives the server through `handle()` exactly as a client would.
+    """
+    import io
+
+    import mcp_proxy_server as mcp
+
+    server = mcp.OwlMcpServer(out=io.StringIO())
+
+    unknown = await server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                   "params": {"name": "no_such_tool", "arguments": {}}})
+    unknown_is_error = bool(unknown and ("error" in unknown
+                                         or unknown.get("result", {}).get("isError")))
+
+    # proxy_stats needs no arguments and no network, so it isolates dispatch.
+    stats = await server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                 "params": {"name": "proxy_stats", "arguments": {}}})
+    dispatched = bool(stats and "result" in stats and "error" not in stats)
+
+    # A missing argument must be reported, not silently defaulted.
+    missing = await server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                   "params": {"name": "proxy_pick", "arguments": {}}})
+    missing_arg_reported = bool(
+        missing and json.dumps(missing).find("domain required") != -1
+    )
+
+    # A notification (no id) must produce no response at all.
+    notif = await server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    notification_dropped = notif is None
+
+    _record(
+        "MCP tool dispatch over JSON-RPC",
+        unknown_is_error and dispatched and missing_arg_reported and notification_dropped,
+        f"unknown-tool is error={unknown_is_error}, proxy_stats dispatched={dispatched}, "
+        f"missing arg reported={missing_arg_reported}, notification dropped={notification_dropped}",
     )
 
 
@@ -421,6 +531,9 @@ async def run_all() -> int:
          check_validate_through_real_proxy, (proxy_port, origin_port)),
         ("proxy target is pinned", check_proxy_target_is_pinned,
          (proxy_port, origin_port)),
+        ("unavailable protocol is reported, not relabelled",
+         check_unavailable_protocol_is_not_mislabelled, (origin_port,)),
+        ("MCP tool dispatch over JSON-RPC", check_mcp_tool_dispatch_over_jsonrpc, ()),
         ("state isolation across instances",
          check_state_isolation_across_instances, (src_port,)),
         ("session affinity", check_affinity_is_sticky, ()),

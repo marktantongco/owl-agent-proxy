@@ -96,6 +96,35 @@ test.
 
 ---
 
+## Q5. Does the code do the thing the gate describes?
+
+*Run the code against a real peer and read what actually happened.*
+
+Q1–Q4 all audit the **instrument**. Q5 audits the **subject**, and it is the only
+one in this file that has found a defect in the code rather than in a checker.
+
+Across five PRs, every defect was in a gate. That looked like a clean codebase
+and was actually an audit that had only ever looked in one direction.
+
+**Ask:** exercise the behaviour end to end — real client, real socket where
+possible — and compare what the code *reports* with what actually crossed the
+wire.
+
+**Found this way:** `ResilientClient.request(protocol="ja3")` with `curl_cffi`
+absent fell through to `_request_http1` and then set
+`response.protocol = protocol`. The origin received plain HTTP/1.1; the caller
+was told ja3. Four of six protocol values behaved this way by default in an
+environment without the optional dependencies.
+
+**Minimum bar:** the check fails if the reported behaviour and the observed
+behaviour differ, and a mutation to that reporting is verified to fail it.
+
+**Minimum bar for this one, specifically:** the assertion is on what the *peer*
+saw, not on what the client returned. A check that reads only the client's own
+report cannot detect a client that lies about itself.
+
+---
+
 ## What is not on this list
 
 **"Is the rule described accurately?"** — this was the original audit question
@@ -122,6 +151,16 @@ is a property of static gates over free text, not a defect to be repaired.
 | `gen-docs.py` | ✅ | ✅ | n/a | n/a |
 | `runtime-check.py` | ✅ | ✅ | n/a | n/a |
 | `verify-skills-lock.py` | ✅ | ✅ | n/a | n/a |
+
+### Q5, by module
+
+| Module | Exercised end to end | Result |
+|---|---|---|
+| `proxy_harvester` | harvest, validate, pinning, isolation | ✅ |
+| `proxy_defense` | protocol dispatch, affinity, breaker | ✅ **after fix** |
+| `mcp_proxy_server` | JSON-RPC dispatch, errors, notifications | ✅ |
+| `reverse_proxy` | not exercised | ❌ |
+| `proxy_harvester` credential rotation | not exercised | ❌ |
 
 `n/a` means the gate has no free-text surface (Q3) or no opt-out (Q4), not that
 the question was skipped.

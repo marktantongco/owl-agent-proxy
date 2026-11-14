@@ -1632,7 +1632,7 @@ This exists because a script-wide catch count was once used to recommend deletin
 `ci-check.sh`, when one of its two rules is a credential scanner with no
 substitute. Argue per rule, not per script.
 
-<!-- generated:gates (7 gates, 24 rules, 23 required, 24 probed) -->
+<!-- generated:gates (7 gates, 26 rules, 25 required, 26 probed) -->
 
 | Gate | Rule | Protects | Required | Evidence |
 |------|------|----------|----------|----------|
@@ -1657,6 +1657,8 @@ substitute. Argue per rule, not per script.
 | `scripts/runtime-check.py` | harness-proxy-is-pinned | the check's own forward proxy dials one fixed loopback origin | yes | `scripts/runtime-check.py --check` |
 | `scripts/runtime-check.py` | affinity-sticky-then-expires | a binding is stable until TTL, then gone | yes | `scripts/runtime-check.py --check` |
 | `scripts/runtime-check.py` | breaker-opens-then-closes | the circuit breaker opens at threshold and closes on success | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | unavailable-protocol-refused | an uninstalled protocol raises instead of sending http/1.1 under its label | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | mcp-dispatch-over-jsonrpc | a tool call, an unknown tool and a notification behave correctly through handle() | yes | `scripts/runtime-check.py --check` |
 | `scripts/verify-skills-lock.py` | vendored-files-present | every lock entry's vendoredPath exists | yes | `tests/test_skills_lock.py` |
 | `scripts/verify-skills-lock.py` | vendored-bytes-match-pin | vendored content matches the pinned upstream commit, unless a localModification is declared | yes | `tests/test_skills_lock.py` |
 | `scripts/verify-skills-lock.py` | lock-is-checkable | --update must be able to record a verifiable hash | yes | `tests/test_skills_lock_update.py` |
