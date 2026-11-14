@@ -1807,13 +1807,31 @@ class ResilientClient:
 
             try:
                 start = time.time()
-                if protocol == "http/2" and HTTP2_AVAILABLE:
+                # An unavailable protocol must fail loudly, not fall through to
+                # http/1.1. Falling through sent a plain request and then
+                # labelled it with the protocol that was *asked for*, so a
+                # caller reading response.protocol believed it had escalated.
+                # _request_stealth already refused to do this for its own case;
+                # the omission was that only its branch was guarded.
+                for _proto, _flag, _dep in (
+                    ("http/2", HTTP2_AVAILABLE, "httpx[http2]"),
+                    ("ja3", JA3_AVAILABLE, "curl_cffi"),
+                    ("websocket", WS_AVAILABLE, "websockets"),
+                    ("browser", PLAYWRIGHT_AVAILABLE, "playwright"),
+                ):
+                    if protocol == _proto and not _flag:
+                        raise RuntimeError(
+                            f"protocol={_proto!r} requested but {_dep} is not installed; "
+                            f"refusing to send http/1.1 under a {_proto!r} label"
+                        )
+
+                if protocol == "http/2":
                     response = await self._request_http2(method, url, params, headers, proxy_url, **kwargs)
-                elif protocol == "ja3" and JA3_AVAILABLE:
+                elif protocol == "ja3":
                     response = await self._request_ja3(method, url, params, headers, proxy_url, **kwargs)
-                elif protocol == "websocket" and WS_AVAILABLE:
+                elif protocol == "websocket":
                     response = await self._request_websocket(url, proxy_url, **kwargs)
-                elif protocol == "browser" and PLAYWRIGHT_AVAILABLE:
+                elif protocol == "browser":
                     response = await self._request_browser(url, proxy_url, **kwargs)
                 elif protocol == "stealth":
                     # Not gated on availability on purpose: falling through to

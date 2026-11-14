@@ -519,3 +519,95 @@ require the reason, pin the reach.
 found every defect in this series, and the state of each gate against them. The
 questions do not reduce to a pass/fail, which is the point: a gate is green when
 someone last asked it something it could answer.
+
+---
+
+# Sixth follow-up: the first defect found in the code, not the checker
+
+**Date:** 2026-11-14
+
+Five PRs found five defects, all in the gates. The audit had only ever looked in
+one direction: at the instruments, never at what they instrument. Turning it
+around found a real bug in `proxy_defense.py` within one runtime check.
+
+## `protocol=` silently degraded, then lied about it
+
+```python
+if protocol == "http/2" and HTTP2_AVAILABLE:
+    response = await self._request_http2(...)
+elif protocol == "ja3" and JA3_AVAILABLE:
+    response = await self._request_ja3(...)
+...
+else:
+    response = await self._request_http1(...)
+...
+response.protocol = protocol        # records what was ASKED FOR
+```
+
+When the optional dependency is not installed, the request falls through to
+plain HTTP/1.1 and is then labelled with the protocol that was requested. A
+caller reading `response.protocol == "ja3"` concludes it sent a TLS-fingerprinted
+request. It sent an ordinary one.
+
+Measured end to end, through a real client against a real origin:
+
+```
+requested=ja3 recorded=ja3 origin_reached=True -> MISLABELLED: http/1.1 sent, reported as ja3
+```
+
+Every optional protocol was unavailable in this environment — `httpx[http2]`,
+`curl_cffi`, `websockets`, `playwright` all absent — so this was the *default*
+behaviour for four of the six protocol values, not an edge case.
+
+**The code already knew.** `_request_stealth` carries this comment:
+
+> Not gated on availability on purpose: falling through to http/1.1 would label
+> an ordinary request "stealth".
+
+The reasoning was written down for one branch and not applied to the other four.
+An unavailable protocol now raises:
+
+```
+protocol='ja3' requested but curl_cffi is not installed; refusing to send
+http/1.1 under a 'ja3' label
+```
+
+and the runtime check asserts the refusal never reaches the origin.
+
+**Why no gate caught it.** `protocol-escalation-justified` checks that a call
+site *names a reason*, not that the protocol it names is the one used. Six PRs of
+tightening that rule could never have found this, because the rule was never
+about behaviour.
+
+## Seam two: MCP dispatch through JSON-RPC
+
+`call_tool` was unit-tested; `handle_one` — which parses the message, validates
+the method, dispatches, and wraps the result — was not. The check drives the
+server exactly as a client would and asserts four things:
+
+| Case | Expected |
+|---|---|
+| `proxy_stats` via `tools/call` | a result, no error |
+| unknown tool name | an error, not an empty success |
+| `proxy_pick` with no arguments | "domain required", not a silent default |
+| a notification (no `id`) | **no response at all** |
+
+Mutation-checked: returning an empty success for an unknown tool fails it, and
+answering a notification fails it.
+
+## State
+
+`7 gates, 26 rules, 25 required, 26 probed.` Runtime checks: 8, all passing.
+
+## The correction to the previous record
+
+The fifth follow-up ended with four questions and the claim that a gate is green
+when someone last asked it something it could answer. That is still true, and it
+is also why none of them found this: **all four questions are about the gate.**
+A fifth is needed, and it is the one that produced the only bug worth reporting:
+
+> **Q5. Does the code do the thing the gate describes?**
+
+Ask it by running the code against a real peer and reading what actually
+happened, not what the code says it did. Q1–Q4 audit the instrument; Q5 audits
+the subject.
