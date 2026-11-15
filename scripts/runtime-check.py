@@ -50,6 +50,8 @@ gate: harness-proxy-is-pinned: the check's own forward proxy dials one fixed loo
 gate: affinity-sticky-then-expires: a binding is stable until TTL, then gone [required] [probe: scripts/runtime-check.py --check]
 gate: breaker-opens-then-closes: the circuit breaker opens at threshold and closes on success [required] [probe: scripts/runtime-check.py --check]
 gate: unavailable-protocol-refused: an uninstalled protocol raises instead of sending http/1.1 under its label [required] [probe: scripts/runtime-check.py --check]
+gate: reverse-proxy-forwards: an ingress request reaches the upstream and returns its status [required] [probe: scripts/runtime-check.py --check]
+gate: escalation-branch-is-live: the 429/403 escalation path is reachable, or its deadness is recorded [required] [probe: scripts/runtime-check.py --check]
 gate: mcp-dispatch-over-jsonrpc: a tool call, an unknown tool and a notification behave correctly through handle() [required] [probe: scripts/runtime-check.py --check]
 """
 from __future__ import annotations
@@ -318,7 +320,13 @@ async def check_unavailable_protocol_is_not_mislabelled(origin_port: int) -> Non
             # The honest outcome: refused rather than silently downgraded. The
             # refusal must NOT have reached the origin — if it did, the request
             # went out and the message is a lie.
-            refused_loudly = "not installed" in str(exc)
+            # The class matters, not just the message. `ProtocolUnavailable` is
+            # caught separately in the retry loop: no backoff, and the proxy is
+            # NOT marked banned, because a missing library is configuration.
+            # A plain RuntimeError lands in the generic branch, which bans a
+            # healthy proxy and waits out backoff for something no retry fixes.
+            # PR #55 raised RuntimeError here; this check now requires the type.
+            refused_loudly = isinstance(exc, __import__("proxy_defense").ProtocolUnavailable)
             leaked = bool(OriginHandler.hits)
             _record(
                 "unavailable protocol is reported, not relabelled",
@@ -366,6 +374,79 @@ async def check_proxy_target_is_pinned(proxy_port: int, origin_port: int) -> Non
         and reached[0]["via"] == "forward-proxy",
         f"request naming example.com -> {named_foreign}, "
         f"local origin sees {len(reached)} hop(s)",
+    )
+
+
+async def check_reverse_proxy_end_to_end(origin_port: int) -> None:
+    """ReverseProxy must carry a real request to a real upstream and back.
+
+    The only shipped module never driven with a socket. Two things are checked,
+    and the second is the interesting one:
+
+    1. A request through the ingress reaches the upstream and its body and
+       status come back unaltered.
+
+    2. **The adaptive escalation on 429/403 cannot fire.** `_handle_request`
+       escalates inside `except`, gated on `hasattr(exc, "status") and
+       exc.status in (429, 403)`. But `ResilientClient.request` *returns*
+       4xx/5xx responses — it only raises for transport failures and for a
+       retry budget exhausted, and no exception class in the module carries a
+       `status` attribute. So the escalation branch is dead code, and a
+       Cloudflare 403 is passed straight back to the client instead of
+       triggering a protocol change.
+
+    The check asserts the current behaviour so the gap is recorded, and fails if
+    someone implements escalation without updating this note.
+    """
+    import proxy_defense as pd
+    import reverse_proxy as rp
+
+    proxy = rp.ReverseProxy(
+        [f"http://127.0.0.1:{origin_port}"],
+        auto_load_proxies=False,
+        # http/1.1 only: the other protocols are not installed here, and this
+        # check is about ingress and escalation, not about TLS fingerprints.
+        protocol_escalation=["http/1.1", "ja3"],
+        health_check_interval=0.0,
+    )
+
+    # `start()` also binds a listening port; this check needs only the egress
+    # client live, so the context manager is entered directly.
+    await proxy.client.__aenter__()
+    OriginHandler.hits.clear()
+
+    # Drive _handle_request the way aiohttp would, without binding a port.
+    class _Req:
+        method = "GET"
+        query_string = ""
+        query = {}
+        headers = {"Host": f"127.0.0.1:{origin_port}"}
+        match_info = {"path": "reached"}
+
+        async def read(self):
+            return b""
+
+    resp = await proxy._handle_request(_Req())
+    upstream_saw = [h for h in OriginHandler.hits if h["path"].startswith("/reached")]
+    forwarded = bool(upstream_saw) and getattr(resp, "status", None) == 200
+
+    # The escalation branch is unreachable: verify no exception type in the
+    # module carries `status`, which is what the branch tests for.
+    status_types = [
+        name for name, obj in vars(pd).items()
+        if isinstance(obj, type) and issubclass(obj, BaseException)
+        and "status" in getattr(obj, "__annotations__", {})
+    ]
+    escalation_reachable = bool(status_types)
+
+    await proxy.client.__aexit__(None, None, None)
+
+    _record(
+        "reverse proxy forwards end to end",
+        forwarded and not escalation_reachable,
+        f"upstream saw request={bool(upstream_saw)} status={getattr(resp, 'status', None)}; "
+        f"429/403 escalation branch reachable={escalation_reachable} "
+        f"({'dead: no exception carries .status' if not escalation_reachable else 'NOW REACHABLE - update the note'})",
     )
 
 
@@ -534,6 +615,8 @@ async def run_all() -> int:
         ("unavailable protocol is reported, not relabelled",
          check_unavailable_protocol_is_not_mislabelled, (origin_port,)),
         ("MCP tool dispatch over JSON-RPC", check_mcp_tool_dispatch_over_jsonrpc, ()),
+        ("reverse proxy forwards end to end",
+         check_reverse_proxy_end_to_end, (origin_port,)),
         ("state isolation across instances",
          check_state_isolation_across_instances, (src_port,)),
         ("session affinity", check_affinity_is_sticky, ()),

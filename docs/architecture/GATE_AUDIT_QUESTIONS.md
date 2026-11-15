@@ -159,7 +159,7 @@ is a property of static gates over free text, not a defect to be repaired.
 | `proxy_harvester` | harvest, validate, pinning, isolation | ✅ |
 | `proxy_defense` | protocol dispatch, affinity, breaker | ✅ **after fix** |
 | `mcp_proxy_server` | JSON-RPC dispatch, errors, notifications | ✅ |
-| `reverse_proxy` | not exercised | ❌ |
+| `reverse_proxy` | ingress forwards; escalation branch pinned dead | ⚠️ forwards, escalation dead |
 | `proxy_harvester` credential rotation | not exercised | ❌ |
 
 `n/a` means the gate has no free-text surface (Q3) or no opt-out (Q4), not that
