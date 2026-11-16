@@ -697,3 +697,97 @@ both required driving the code and comparing what it did with what it said.
 ## State
 
 `7 gates, 28 rules, 27 required, 28 probed.` Runtime checks: 9, all passing.
+
+---
+
+# Eighth follow-up: the credential store never applied a credential
+
+**Date:** 2026-11-16
+
+The last ❌ in the Q5 table was "harvester credential rotation on a 407". It was
+listed as *not exercised*. Exercising it found that it could not be exercised,
+because no credential was ever applied in the first place.
+
+## Two defects in twenty-five lines
+
+### 1. The lookup key never matched
+
+```python
+def add(self, host, username, password):     # keyed by whatever the caller passes
+def apply(self, proxy_url):
+    host = parsed.hostname or ""             # looks up the BARE hostname
+    creds = self.get(host)
+```
+
+Config reaches this through `proxy_credentials`, a mapping the operator writes,
+and the only form that makes sense next to a proxy URL is `"10.0.0.1:8080"`. No
+documented convention existed. Measured:
+
+```
+keyed as '10.0.0.1:8080' (the URL's own form) -> credential=None
+keyed as '10.0.0.1'      (bare hostname)      -> credential=('10.0.0.1', 'user1')
+```
+
+The consequence chain is what makes this a bug rather than a rough edge:
+
+| Step | Result with a `host:port` key |
+|---|---|
+| `apply()` | returns `credential=None` |
+| proxy used | **unauthenticated** |
+| `used_credential` in `request()` | stays `None` |
+| 407 branch guard `if proxy and used_credential` | **always false** |
+| credential rotation | **never runs** |
+
+So the feature was not untested-and-probably-fine. It was unreachable, and the
+unreachability was invisible because `apply()` degrades quietly to "no
+credential" rather than failing.
+
+### 2. Credentials were interpolated without percent-encoding
+
+```python
+netloc = f"{username}:{password}@{parsed.hostname}"
+```
+
+Measured:
+
+| Password | Resulting URL | What breaks |
+|---|---|---|
+| `pa/ss` | `http://user1:pa/ss@10.0.0.1:8080` | `/` moves the path |
+| `pa@ss` | `http://user1:pa@ss@10.0.0.1:8080` | second `@` — host becomes `pa` |
+| `pa?ss` | `http://user1:pa?ss@…` | `?` starts the query |
+
+A `#` truncates the URL entirely. Any of these corrupts the proxy connection,
+and none of them produces an error at the point of corruption.
+
+## Fix
+
+`apply()` now tries `host:port` then bare hostname, and percent-encodes both
+halves with `quote(..., safe="")`. Verified to round-trip: `p@ss:w/rd` becomes
+`p%40ss%3Aw%2Frd` and `unquote` recovers the original.
+
+## Probes
+
+`tests/test_credential_store.py`, 8 cases: both key forms resolve, an unknown
+host still yields nothing, an embedded credential is left alone, `mark_failed`
+rotates, and metacharacters in either half do not corrupt the URL. A runtime
+check drives the rotation end to end.
+
+Mutation-checked:
+
+| Mutation | Result |
+|---|---|
+| revert to bare-hostname lookup | 2 probes fail, rotation unreachable |
+| revert the percent-encoding | 3 probes fail, host becomes garbage |
+
+**One probe was wrong before it was right.** `apply()` returns
+`(effective_url, (host_key, username))` — the identity for a later
+`mark_failed`, not the password. I asserted `(username, password)` and wrote it
+off as "the code returns the wrong tuple" before re-reading. The tuple was
+documented in the docstring directly above. Correcting the probe, not the code,
+was the right move; the risk of "fix" is changing an API to match a test I wrote
+ten minutes earlier.
+
+## State
+
+`7 gates, 29 rules, 28 required, 29 probed.` Runtime checks: 10, all passing.
+`tests/test_credential_store.py`: 8 probes.

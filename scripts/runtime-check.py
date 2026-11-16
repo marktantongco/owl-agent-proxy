@@ -52,6 +52,7 @@ gate: breaker-opens-then-closes: the circuit breaker opens at threshold and clos
 gate: unavailable-protocol-refused: an uninstalled protocol raises instead of sending http/1.1 under its label [required] [probe: scripts/runtime-check.py --check]
 gate: reverse-proxy-forwards: an ingress request reaches the upstream and returns its status [required] [probe: scripts/runtime-check.py --check]
 gate: escalation-branch-is-live: the 429/403 escalation path is reachable, or its deadness is recorded [required] [probe: scripts/runtime-check.py --check]
+gate: credential-store-rotates: a 407 rotates to the next credential instead of banning the proxy [required] [probe: scripts/runtime-check.py --check] [probe: tests/test_credential_store.py]
 gate: mcp-dispatch-over-jsonrpc: a tool call, an unknown tool and a notification behave correctly through handle() [required] [probe: scripts/runtime-check.py --check]
 """
 from __future__ import annotations
@@ -377,6 +378,35 @@ async def check_proxy_target_is_pinned(proxy_port: int, origin_port: int) -> Non
     )
 
 
+async def check_407_rotates_credentials() -> None:
+    """A 407 must rotate to the next credential instead of banning the proxy.
+
+    `credential-store-rotates` shipped with the rotation unreachable: `apply()`
+    looked a credential up by bare hostname while config is keyed the way the
+    URL is written (`host:port`), so no credential was ever applied and
+    `used_credential` was always None -- which is the condition the 407 branch
+    tests before rotating. Exercise the whole path rather than the store alone.
+    """
+    import proxy_defense as pd
+
+    store = pd.CredentialStore()
+    store.add("127.0.0.1:3128", "u1", "p1")
+    store.add("127.0.0.1:3128", "u2", "p2")
+
+    url1, cred1 = store.apply("http://127.0.0.1:3128")
+    applied = cred1 is not None and "u1:p1@" in url1
+    store.mark_failed(cred1[0], cred1[1]) if applied else None
+    url2, cred2 = store.apply("http://127.0.0.1:3128")
+    rotated = applied and cred2 is not None and cred2 != cred1 and "u2:p2@" in url2
+
+    _record(
+        "407 rotates to the next credential",
+        applied and rotated,
+        f"first={cred1} second={cred2} rotated={rotated} "
+        f"({'rotation reachable' if rotated else 'rotation DEAD: no credential ever applied'})",
+    )
+
+
 async def check_reverse_proxy_end_to_end(origin_port: int) -> None:
     """ReverseProxy must carry a real request to a real upstream and back.
 
@@ -617,6 +647,7 @@ async def run_all() -> int:
         ("MCP tool dispatch over JSON-RPC", check_mcp_tool_dispatch_over_jsonrpc, ()),
         ("reverse proxy forwards end to end",
          check_reverse_proxy_end_to_end, (origin_port,)),
+        ("407 rotates to the next credential", check_407_rotates_credentials, ()),
         ("state isolation across instances",
          check_state_isolation_across_instances, (src_port,)),
         ("session affinity", check_affinity_is_sticky, ()),
