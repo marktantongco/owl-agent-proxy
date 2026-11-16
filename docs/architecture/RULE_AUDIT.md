@@ -611,3 +611,89 @@ A fifth is needed, and it is the one that produced the only bug worth reporting:
 Ask it by running the code against a real peer and reading what actually
 happened, not what the code says it did. Q1–Q4 audit the instrument; Q5 audits
 the subject.
+
+---
+
+# Seventh follow-up: my own fix from #55 was the wrong kind of error
+
+**Date:** 2026-11-14
+
+PR #55 stopped `protocol=` silently degrading by raising. It raised
+`RuntimeError`. A `ProtocolUnavailable` class already existed in the same module,
+with a handler written specifically for this case:
+
+```python
+except ProtocolUnavailable:
+    # Configuration, not transience: no backoff, and the proxy is
+    # innocent, so it must not be marked banned.
+    raise
+```
+
+`RuntimeError` falls into the generic branch below it, which calls
+`mark_banned(proxy)` and waits out backoff. So the fix introduced a new defect:
+**a missing library would ban a healthy proxy.** The message was right and the
+type was wrong, and the type is what the handler dispatches on.
+
+The runtime check now asserts `isinstance(exc, ProtocolUnavailable)` rather than
+`"not installed" in str(exc)`. It failed against my own fix.
+
+This is the same shape as everything else in this document: the artifact that
+looked correct — an exception with an honest message — was not the thing the
+system reads.
+
+## The dead escalation branch in `reverse_proxy.py`
+
+`ReverseProxy._handle_request` escalates protocol on 429/403:
+
+```python
+except Exception as exc:
+    ...
+    if hasattr(exc, "status") and exc.status in (429, 403):
+        continue          # escalate to the next protocol
+    break
+```
+
+**This can never run.** `ResilientClient.request` returns 4xx/5xx responses; it
+does not raise them. Verified against a live server returning 403:
+
+```
+403 -> returned a response, status=403 (not an exception)
+```
+
+And no exception class in `proxy_defense` carries a `status` attribute, so
+`hasattr(exc, "status")` is always False. The behaviour that actually happens:
+
+| Path | Reality |
+|---|---|
+| Upstream returns 403 | passed straight back to the client |
+| Escalation to ja3/browser | never attempted |
+| `except` branch with a status | unreachable |
+
+The README-level claim "adaptive protocol escalation on 429/403" is a feature
+that has never executed. The check pins both halves — the request must forward,
+and the branch must be recorded as dead — so implementing it for real fails the
+check until the note is updated.
+
+## What direction-of-audit bought, second time
+
+Q5 found a bug in the code on its first use (#55). Its second use found:
+
+1. A defect **I introduced** in the fix from #55.
+2. A feature in a third module that has never run.
+
+Neither was reachable by any static gate, and neither was visible from reading —
+both required driving the code and comparing what it did with what it said.
+
+| PR | Defect found | Layer |
+|---|---|---|
+| #50 | negative `sed` window | instrument |
+| #51 | rule with no probe | instrument |
+| #52 | evidence faked by prose | instrument |
+| #53 | bare opt-out markers | instrument |
+| #54 | marker path missed | instrument |
+| #55 | protocol degradation mislabelled | **code** |
+| #56 | wrong exception type; dead escalation | **code**, one of them mine |
+
+## State
+
+`7 gates, 28 rules, 27 required, 28 probed.` Runtime checks: 9, all passing.

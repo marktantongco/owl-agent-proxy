@@ -1820,7 +1820,10 @@ class ResilientClient:
                     ("browser", PLAYWRIGHT_AVAILABLE, "playwright"),
                 ):
                     if protocol == _proto and not _flag:
-                        raise RuntimeError(
+                        # ProtocolUnavailable, not RuntimeError: it is caught
+                        # separately so the retry loop does not back off and does
+                        # not mark a healthy proxy banned for a missing library.
+                        raise ProtocolUnavailable(
                             f"protocol={_proto!r} requested but {_dep} is not installed; "
                             f"refusing to send http/1.1 under a {_proto!r} label"
                         )
