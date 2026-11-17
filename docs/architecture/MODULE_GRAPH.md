@@ -88,5 +88,5 @@ No import cycles. ✅
 | `mcp_proxy_server` | 972 |
 | `proxy_defense` | 2341 |
 | `proxy_harvester` | 960 |
-| `reverse_proxy` | 1028 |
+| `reverse_proxy` | 1052 |
 

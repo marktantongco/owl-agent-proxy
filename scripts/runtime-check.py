@@ -52,6 +52,7 @@ gate: breaker-opens-then-closes: the circuit breaker opens at threshold and clos
 gate: unavailable-protocol-refused: an uninstalled protocol raises instead of sending http/1.1 under its label [required] [probe: scripts/runtime-check.py --check]
 gate: reverse-proxy-forwards: an ingress request reaches the upstream and returns its status [required] [probe: scripts/runtime-check.py --check]
 gate: escalation-branch-is-live: the 429/403 escalation path is reachable, or its deadness is recorded [required] [probe: scripts/runtime-check.py --check]
+gate: explicit-protocol-honoured: an X-OWL-Protocol request is attempted first, in any header casing [required] [probe: scripts/runtime-check.py --check]
 gate: credential-store-rotates: a 407 rotates to the next credential instead of banning the proxy [required] [probe: scripts/runtime-check.py --check] [probe: tests/test_credential_store.py]
 gate: mcp-dispatch-over-jsonrpc: a tool call, an unknown tool and a notification behave correctly through handle() [required] [probe: scripts/runtime-check.py --check]
 """
@@ -471,12 +472,32 @@ async def check_reverse_proxy_end_to_end(origin_port: int) -> None:
 
     await proxy.client.__aexit__(None, None, None)
 
+    # An explicit protocol header must change which protocol is ATTEMPTED, not
+    # just which one `_select_protocol` reports. It used to be consulted only
+    # for the `== "stealth"` test, while the egress loop walked the chain from
+    # index 0, so `X-OWL-Protocol: ja3` silently went out as http/1.1.
+    attempts: list[str] = []
+    original_request = proxy.client.request
+
+    async def _recording_request(**kwargs):
+        attempts.append(kwargs.get("protocol"))
+        return await original_request(**kwargs)
+
+    proxy.client.request = _recording_request
+
+    class _Ja3Req(_Req):
+        headers = {"X-OWL-Protocol": "ja3"}
+
+    OriginHandler.hits.clear()
+    await proxy._handle_request(_Ja3Req())
+    honoured = attempts[:1] == ["ja3"]
+
     _record(
         "reverse proxy forwards end to end",
-        forwarded and not escalation_reachable,
+        forwarded and honoured,
         f"upstream saw request={bool(upstream_saw)} status={getattr(resp, 'status', None)}; "
-        f"429/403 escalation branch reachable={escalation_reachable} "
-        f"({'dead: no exception carries .status' if not escalation_reachable else 'NOW REACHABLE - update the note'})",
+        f"X-OWL-Protocol: ja3 attempt order={attempts} "
+        f"({'honoured' if honoured else 'IGNORED: loop started at http/1.1'})",
     )
 
 

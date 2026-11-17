@@ -791,3 +791,90 @@ ten minutes earlier.
 
 `7 gates, 29 rules, 28 required, 29 probed.` Runtime checks: 10, all passing.
 `tests/test_credential_store.py`: 8 probes.
+
+---
+
+# Ninth follow-up: the silent-fallback shape, three times in one module
+
+**Date:** 2026-11-17
+
+Three of the last four defects were the same shape: **a capability was
+requested, could not be provided, and the code continued with a weaker default
+without saying so.** `protocol=` fell back to http/1.1 and relabelled the
+response; `apply()` found no credential and used the proxy unauthenticated;
+`_select_protocol` honoured a header that the request loop ignored.
+
+The third one was found by asking whether the shape recurs, not by running
+`reverse_proxy.py` again. It did, twice more, in the same function.
+
+## Defect: `X-OWL-Protocol` was read, then discarded
+
+```python
+protocol = self._select_protocol(forward_headers, target_url)
+...
+if protocol == "stealth" and self._stealth_client is not None:     # the ONLY use
+...
+for attempt_protocol in self.protocol_escalation:                  # starts at index 0
+```
+
+`_select_protocol` implements three documented selection rules — explicit
+header, skip open circuits, prefer http/2 for https. Its result was consulted in
+exactly one comparison. A request carrying `X-OWL-Protocol: ja3` was sent as
+http/1.1, and an https target never got the http/2 preference.
+
+Measured:
+
+```
+https target, no header        _select_protocol -> 'http/2'
+explicit X-OWL-Protocol: ja3   _select_protocol -> 'ja3'
+  but the egress loop's first attempt is always 'http/1.1'
+```
+
+## Defect: the header lookup was case-sensitive
+
+```python
+explicit = request_headers.get("x-owl-protocol")
+```
+
+`forward_headers` is a plain dict built from `request.headers.items()`, which
+preserves wire casing. HTTP header names are case-insensitive; this lookup was
+not. So even after the first fix, `X-OWL-Protocol: ja3` — the documented
+spelling — matched nothing, because the key in the dict was `X-OWL-Protocol`.
+
+Found only because the runtime check asserted the *effect* (which protocol was
+attempted) rather than which protocol was *reported*. Every earlier assertion
+would have passed.
+
+## The interaction worth recording
+
+With the chain now starting at the requested protocol, an uninstalled library
+raises `ProtocolUnavailable` on the first attempt. The exception handler
+`continue`d nowhere — it broke the loop and returned 502. That is wrong for the
+*same reason* the original downgrade was wrong, inverted: refusing to send
+http/1.1 under a ja3 label is right; refusing to fall through the chain, where
+the next attempt is honestly labelled http/1.1, is not.
+
+`_handle_request` now continues the chain on `ProtocolUnavailable` and does not
+record a circuit failure for it — a missing library is configuration, and the
+circuit is for transience.
+
+## The lint that does not work
+
+The Strategic proposal was a lint for silent fallbacks. Measured against this
+module: 40+ candidate sites, of which the three real defects are
+indistinguishable from correct code by shape alone. A detector for
+"selector result is only partly consulted" flags `_select_protocol` (18 uses,
+buggy) and `_select_upstream` (14 uses, correct) identically.
+
+**Counts of uses do not distinguish "consulted" from "used correctly".** The
+lint would have produced two hits, one false, and required a human to adjudicate
+both — which is what happened without the lint.
+
+What did work was writing the assertion against the observable effect: *which
+protocol was attempted, in what order*. That failed immediately on the
+case-sensitivity bug, which no amount of reading the selector would have shown.
+
+## State
+
+`7 gates, 30 rules, 29 required, 30 probed.` Runtime checks: 10, all passing.
+682 tests.
