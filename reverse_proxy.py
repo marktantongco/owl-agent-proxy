@@ -631,8 +631,13 @@ class ReverseProxy:
           3. Target characteristics: HTTPS -> http/2 preferred
           4. Default: first protocol in escalation chain
         """
-        # 1. Explicit protocol header
-        explicit = request_headers.get("x-owl-protocol")
+        # 1. Explicit protocol header. HTTP header names are case-insensitive,
+        # but `forward_headers` is a plain dict preserving the wire casing, so
+        # `X-OWL-Protocol` and `x-owl-protocol` were different keys. The
+        # documented header was ignored for every sender that capitalised it,
+        # which is every sender.
+        lowered = {str(k).lower(): v for k, v in request_headers.items()}
+        explicit = lowered.get("x-owl-protocol")
         if explicit and explicit in self.protocol_escalation:
             protocol = explicit.lower()
             if not self.circuit_breaker.is_open(protocol):
@@ -809,8 +814,17 @@ class ReverseProxy:
                 )
                 return self._error_response(502, "Bad Gateway")
 
-        # Try protocols in escalation order (ResilientClient egress)
-        for attempt_protocol in self.protocol_escalation:
+        # Try protocols in escalation order, starting from the selected one.
+        # `_select_protocol` honours an explicit X-OWL-Protocol header and
+        # prefers http/2 for https targets, but its result used to be consulted
+        # only for the `== "stealth"` check above. The loop then walked the chain
+        # from index 0, so a request asking for ja3 silently went out as
+        # http/1.1 -- the same shape as the fixed `protocol=` downgrade: the
+        # request was honoured in name and ignored in fact.
+        chain = list(self.protocol_escalation)
+        if protocol in chain:
+            chain = chain[chain.index(protocol):] + chain[:chain.index(protocol)]
+        for attempt_protocol in chain:
             if attempt_protocol == "stealth":
                 # Stealth handled above; skip in the standard loop
                 continue
@@ -839,6 +853,16 @@ class ReverseProxy:
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 target.mark_failure()
+
+                # A protocol that cannot run on this machine is configuration,
+                # not failure: it must not open the circuit, and the chain is
+                # the honest way to degrade -- the next attempt is labelled with
+                # the protocol that actually runs. Without this, an explicit
+                # X-OWL-Protocol for an uninstalled library returns 502 instead
+                # of falling through to http/1.1.
+                if type(exc).__name__ == "ProtocolUnavailable":
+                    continue
+
                 self.circuit_breaker.record_failure(attempt_protocol)
 
                 # Escalate on 429/403

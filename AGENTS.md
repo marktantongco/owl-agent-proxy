@@ -1633,7 +1633,7 @@ This exists because a script-wide catch count was once used to recommend deletin
 `ci-check.sh`, when one of its two rules is a credential scanner with no
 substitute. Argue per rule, not per script.
 
-<!-- generated:gates (7 gates, 29 rules, 28 required, 29 probed) -->
+<!-- generated:gates (7 gates, 30 rules, 29 required, 30 probed) -->
 
 | Gate | Rule | Protects | Required | Evidence |
 |------|------|----------|----------|----------|
@@ -1661,6 +1661,7 @@ substitute. Argue per rule, not per script.
 | `scripts/runtime-check.py` | unavailable-protocol-refused | an uninstalled protocol raises instead of sending http/1.1 under its label | yes | `scripts/runtime-check.py --check` |
 | `scripts/runtime-check.py` | reverse-proxy-forwards | an ingress request reaches the upstream and returns its status | yes | `scripts/runtime-check.py --check` |
 | `scripts/runtime-check.py` | escalation-branch-is-live | the 429/403 escalation path is reachable, or its deadness is recorded | yes | `scripts/runtime-check.py --check` |
+| `scripts/runtime-check.py` | explicit-protocol-honoured | an X-OWL-Protocol request is attempted first, in any header casing | yes | `scripts/runtime-check.py --check` |
 | `scripts/runtime-check.py` | credential-store-rotates | a 407 rotates to the next credential instead of banning the proxy | yes | `scripts/runtime-check.py --check, tests/test_credential_store.py` |
 | `scripts/runtime-check.py` | mcp-dispatch-over-jsonrpc | a tool call, an unknown tool and a notification behave correctly through handle() | yes | `scripts/runtime-check.py --check` |
 | `scripts/verify-skills-lock.py` | vendored-files-present | every lock entry's vendoredPath exists | yes | `tests/test_skills_lock.py` |
