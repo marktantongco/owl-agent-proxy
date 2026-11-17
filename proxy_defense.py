@@ -748,21 +748,40 @@ class CredentialStore:
         available for the host, the URL is returned unchanged with
         ``credential=None``.
         """
-        from urllib.parse import urlparse, urlunparse
+        from urllib.parse import quote, urlparse, urlunparse
 
         parsed = urlparse(proxy_url)
         if parsed.username:
             return proxy_url, None
-        host = parsed.hostname or ""
-        creds = self.get(host)
-        if creds is None:
+        hostname = parsed.hostname or ""
+
+        # Credentials may be keyed either by bare hostname or by host:port,
+        # because the config is written by whoever provisioned the proxy and no
+        # documented convention existed. `apply` previously looked up only
+        # `hostname`, so a `"10.0.0.1:8080"` key -- the form the proxy URL
+        # itself uses -- never matched: no credential was applied, the proxy was
+        # used unauthenticated, and `used_credential` stayed None, which is the
+        # exact condition the 407 branch tests before rotating. That made
+        # credential rotation unreachable.
+        host_key = hostname
+        if parsed.port:
+            host_key = f"{hostname}:{parsed.port}"
+        for candidate in (host_key, hostname):
+            creds = self.get(candidate)
+            if creds is not None:
+                host_key = candidate
+                break
+        else:
             return proxy_url, None
+
         username, password = creds
-        netloc = f"{username}:{password}@{parsed.hostname}"
+        # Percent-encode both halves. Interpolating them raw meant a password of
+        # `pa/ss` moved the path and a `@` moved the host, corrupting the URL.
+        netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{hostname}"
         if parsed.port:
             netloc += f":{parsed.port}"
         effective = urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-        return effective, (host, username)
+        return effective, (host_key, username)
 
     def apply_url(self, proxy_url: str) -> str:
         """Convenience: return only the effective URL from ``apply()``."""

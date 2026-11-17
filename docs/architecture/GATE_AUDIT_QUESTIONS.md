@@ -160,7 +160,7 @@ is a property of static gates over free text, not a defect to be repaired.
 | `proxy_defense` | protocol dispatch, affinity, breaker | ✅ **after fix** |
 | `mcp_proxy_server` | JSON-RPC dispatch, errors, notifications | ✅ |
 | `reverse_proxy` | ingress forwards; escalation branch pinned dead | ⚠️ forwards, escalation dead |
-| `proxy_harvester` credential rotation | not exercised | ❌ |
+| credential rotation on a 407 | rotation reaches the next credential | ✅ **after fix** |
 
 `n/a` means the gate has no free-text surface (Q3) or no opt-out (Q4), not that
 the question was skipped.

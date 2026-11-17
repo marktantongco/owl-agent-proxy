@@ -86,7 +86,7 @@ No import cycles. ✅
 | `gateway.free_catalog.router_integration` | 89 |
 | `gateway.router` | 255 |
 | `mcp_proxy_server` | 972 |
-| `proxy_defense` | 2322 |
+| `proxy_defense` | 2341 |
 | `proxy_harvester` | 960 |
 | `reverse_proxy` | 1028 |
 
